@@ -1,0 +1,2 @@
+# Drop your raw .csv files here for processing by run_processor.py
+# The pipeline will move processed CSVs to ../processed/ and write outputs to ../output/runs/

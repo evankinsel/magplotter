@@ -1,0 +1,7 @@
+# Example magnetometer CSV for testing the pipeline
+# Lines starting with # or // are treated as header comments and ignored by the parser
+# time,mx,my,mz header is optional — numeric rows are parsed by position
+time,mx,my,mz
+0,12.3,4.2,-31.5
+0.1,12.5,4.0,-31.4
+0.2,12.4,3.9,-31.6
