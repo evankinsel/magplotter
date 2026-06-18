@@ -1,103 +1,223 @@
 # MagPlotter
 
-MagPlotter is a magnetometer data processing pipeline that converts raw CSV sensor logs into structured engineering analysis, visualizations, and per-run reports.
+MagPlotter is a magnetometer data processing and spatial field characterization platform. It converts raw CSV sensor logs into structured engineering analysis, visualizations, field maps, and per-run reports.
 
-It is designed for experimental and research workflows where raw magnetic field measurements must be cleaned, analyzed, and summarized in a reproducible format.
+Designed for experimental and research workflows where raw magnetic field measurements must be cleaned, analyzed, mapped, and summarized in a reproducible format.
 
-Each input file is treated as an independent experimental run, producing a self-contained output directory containing plots, statistical summaries, and machine-readable reports.
+---
 
 ## Core Capabilities
 
-- Cleans and validates raw magnetometer CSV logs  
-- Filters noise and removes invalid or malformed samples  
-- Computes magnetic field vectors (mx, my, mz) and magnitude  
-- Calculates heading using circular statistics  
-- Generates statistical summaries (mean, variance, drift, noise metrics)  
-- Produces standardized engineering plots  
-- Exports structured JSON reports and human-readable summaries  
-- Organizes outputs into isolated per-run folders for traceability  
+**Time-Series Analysis**
+- Cleans and validates raw magnetometer CSV logs
+- Computes field magnitude |B| and per-axis statistics
+- Calculates heading using circular statistics
+- Generates mean, variance, drift, and noise metrics
+- Produces standardized engineering plots
 
-## Design Goal
+**Spatial Field Mapping** *(automatic when X/Y coordinate columns are detected)*
+- Detects spatial coordinate columns automatically (flexible naming)
+- Interpolates scattered measurements onto a uniform grid (scipy)
+- Generates 2D heatmap, contour map, vector field, and 3D surface plots
+- Computes 21 engineering metrics: peak field, uniformity, gradient, magnetic center, symmetry, radial falloff, and more
+- Exports interactive HTML maps (Plotly) for zoom/pan/hover inspection
 
-The system is built to behave like a laboratory-grade data processing tool:
-
-- One CSV file equals one experimental run  
-- One command produces a complete analysis package  
-- Outputs are structured, reproducible, and easy to compare across experiments  
-
-The architecture is modular and designed for future extension into real-time processing and GUI-based analysis tools.
+---
 
 ## Quick Start
 
 ### 1. Install
 
 ```bash
-# Clone or navigate to the magplotter directory
-cd /path/to/magplotter
-
-# Create and activate virtual environment (optional but recommended)
-python3 -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-# Install dependencies
+git clone https://github.com/evankinsel/magplotter
+cd magplotter
 pip install -r requirements.txt
 ```
 
-### 2. Prepare Your Data
+### 2. Drop CSV files into `incoming/`
 
-Export magnetometer readings as a CSV with columns:
-```
-time,mx,my,mz
-```
-
-Example:
-```csv
-time,mx,my,mz
-0.0,10.5,20.3,5.2
-0.1,10.6,20.2,5.3
-0.2,10.4,20.4,5.1
-...
-```
-
-**Units:** Any consistent units (µT, Gauss, arbitrary counts). MagPlotter doesn't enforce units—just be consistent.
-
-### 3. Process Your Data
-
-**Option A: One-time processing (process all incoming CSVs)**
 ```bash
+cp your_data.csv incoming/
+```
+
+### 3. Run
+
+```bash
+# Process all CSVs in incoming/ once
 python main.py
-```
 
-**Option B: Continuous watching (auto-process as files arrive)**
-```bash
+# Watch incoming/ and auto-process new files as they arrive
 python main.py --watch
-```
 
-**Option C: Process a specific folder**
-```bash
+# Process a specific project folder
 python main.py /path/to/project
-python main.py /path/to/project --watch
 ```
 
-### 4. Find Your Results
-
-For each input CSV, a dedicated output folder is created:
+### 4. Inspect results
 
 ```
 output/
-└── run_name/
-    ├── raw_data.csv              # Original input (copy)
-    ├── cleaned_data.csv          # Processed data (cleaned)
-    ├── cleaned_data.parquet      # Same as above, binary format (fast I/O)
-    ├── field_strength_plot.png   # |B| magnitude vs time
-    ├── heading_plot.png          # Heading angle vs time
-    ├── axes_plot.png             # Individual axes (mx, my, mz) vs time
-    ├── summary.json              # Metrics and statistics
-    ├── report.txt                # Human-readable report
-    └── processing_log.txt        # Processing metadata
+└── your_data/
+    ├── field_strength_plot.png
+    ├── heading_plot.png
+    ├── axes_plot.png
+    ├── field_heatmap.png          # spatial runs only
+    ├── field_contours.png         # spatial runs only
+    ├── vector_field.png           # spatial runs with Bx/By
+    ├── field_surface.png          # spatial runs only
+    ├── interactive_heatmap.html   # spatial runs only (requires plotly)
+    ├── interactive_surface.html   # spatial runs only (requires plotly)
+    ├── field_metrics.json         # spatial runs only
+    ├── cleaned_data.csv
+    ├── summary.json
+    └── report.txt
 ```
 
-Your original CSV is archived to `processed/` for bookkeeping.
+---
+
+## Supported CSV Formats
+
+### Time-Series (sensor log)
+
+```csv
+time,mx,my,mz
+0.00,12.24,28.08,8.30
+0.05,12.16,28.14,8.42
+```
+
+Column aliases accepted: `t`, `timestamp`, `x`/`bx`/`mag_x` for mx, etc.
+
+### 2D Field Map
+
+```csv
+X,Y,B
+0,0,100.2
+10,0,95.8
+20,0,89.3
+```
+
+```csv
+X_mm,Y_mm,Bx,By,Bz
+0,0,10.1,5.2,2.3
+10,0,9.6,4.9,2.1
+```
+
+### 3D Field Map
+
+```csv
+X,Y,Z,Bmag
+0,0,0,100.2
+10,0,0,95.8
+```
+
+**Spatial column aliases** (case-insensitive):
+
+| Axis | Recognized names |
+|------|-----------------|
+| X | `x`, `X`, `pos_x`, `position_x`, `x_mm`, `x_cm`, `x_m`, `col_x`, `x_pos`, `posx` |
+| Y | `y`, `Y`, `pos_y`, `position_y`, `y_mm`, `y_cm`, `y_m`, `col_y`, `y_pos`, `posy` |
+| Z | `z`, `Z`, `pos_z`, `position_z`, `z_mm`, `z_cm`, `z_m`, `col_z`, `z_pos`, `posz` |
+
+**Field column aliases:**
+
+| Type | Recognized names |
+|------|-----------------|
+| Magnitude | `B`, `Bmag`, `b_mag`, `magnitude`, `field`, `field_strength`, `b_total`, `\|B\|` |
+| Components | `Bx`/`By`/`Bz`, `b_x`/`b_y`/`b_z`, `field_x`/`field_y`/`field_z` |
+
+When only vector components are present, magnitude is computed as √(Bx² + By² + Bz²).
+
+MagPlotter also handles comment lines (`#`, `//`), extra columns, and malformed rows gracefully.
+
+---
+
+## Field Mapping
+
+Field mapping runs **automatically** whenever X and Y coordinate columns are detected. No configuration required.
+
+### What gets generated
+
+| File | Contents |
+|------|----------|
+| `field_heatmap.png` | 2D magnitude heatmap (viridis, measurement points overlaid) |
+| `field_contours.png` | Filled contours with labels, peak (+) and minimum (×) marked |
+| `vector_field.png` | Quiver arrows over magnitude background (when Bx/By available) |
+| `field_surface.png` | 3D surface — height encodes \|B\| |
+| `interactive_heatmap.html` | Plotly heatmap with zoom/pan/hover |
+| `interactive_surface.html` | Plotly 3D surface with rotation |
+| `field_metrics.json` | Full characterization metrics (see below) |
+
+### Field metrics (`field_metrics.json`)
+
+| Metric | Description |
+|--------|-------------|
+| `peak_field_strength` | Maximum \|B\| on the grid (µT) |
+| `average_field_strength` | Mean \|B\| across valid grid cells |
+| `minimum_field_strength` | Minimum \|B\| on the grid |
+| `field_std` / `field_variance` | Statistical spread of field values |
+| `field_uniformity_pct` | (1 − std/mean) × 100 — 100% = perfectly uniform |
+| `hot_spot` | Location and value of peak field |
+| `cold_spot` | Location and value of minimum field |
+| `magnetic_center` | \|B\|-weighted centroid of the field distribution |
+| `gradient_stats` | Max/mean gradient magnitude and peak gradient location |
+| `uniform_region_fraction` | Fraction of scan area where B ≥ mean − std |
+| `coverage_area` / `coverage_fraction` | Area and fraction of scan with valid data |
+| `field_distribution_histogram` | 20-bin histogram of field values |
+| `radial_falloff_profile` | Mean B vs distance from magnetic center |
+| `symmetry_score` | 0–1 field symmetry estimate (1 = perfectly symmetric) |
+
+### Example report section
+
+```
+FIELD MAP SUMMARY
+----------------------------------------
+Spatial columns : X=X_mm, Y=Y_mm  (3D=False, vector=True)
+Interpolation   : linear  grid 100×100
+
+Peak Field      : 100.200 µT
+Average Field   : 92.829 µT
+Minimum Field   : 82.100 µT
+Std Deviation   : 3.433 µT
+Uniformity      : 96.3 %
+Hot Spot        : (0.000, 0.000)  B=100.200 µT
+Magnetic Center : (9.820, 9.894)
+Max Gradient    : 1.405 µT/mm
+Mean Gradient   : 0.681 µT/mm
+Coverage Area   : 408.122 mm²
+Symmetry Score  : 0.942
+```
+
+### Configuration (`config/config.yaml`)
+
+```yaml
+field_mapping:
+  enabled: true
+
+  interpolation:
+    method: linear          # nearest | linear | cubic
+    grid_resolution: 100    # grid points per axis [10–1000]
+
+  heatmap:
+    enabled: true
+    colormap: viridis
+
+  contour:
+    enabled: true
+    levels: 15
+
+  vector_field:
+    enabled: true
+    density: 20             # quiver arrows per axis
+    normalize: false        # true = direction only, false = length encodes strength
+
+  surface:
+    enabled: true
+
+  interactive:
+    enabled: true           # requires: pip install plotly
+```
+
+If the file is absent, all features default to enabled with sensible values.
 
 ---
 
@@ -105,389 +225,180 @@ Your original CSV is archived to `processed/` for bookkeeping.
 
 ```
 magplotter/
-├── main.py                      # CLI entrypoint
+├── main.py                        # CLI entrypoint (batch or --watch)
 ├── config/
-│   └── settings.json            # Configuration file
+│   ├── settings.json              # Basic directory config
+│   └── config.yaml                # Field mapping config
 ├── src/
-│   ├── __init__.py
-│   ├── file_manager.py          # File discovery and folder management
-│   └── report_generator.py      # Human-readable report generation
+│   ├── file_manager.py            # File discovery and folder management
+│   ├── report_generator.py        # report.txt generation
+│   └── field_mapping/             # Spatial field mapping subsystem
+│       ├── __init__.py            # Orchestrator: run_field_mapping()
+│       ├── detector.py            # Coordinate/field column detection
+│       ├── interpolator.py        # scipy griddata → uniform grid
+│       ├── heatmap.py             # 2D magnitude heatmap
+│       ├── contour.py             # Filled contour map
+│       ├── vectorfield.py         # Quiver vector field
+│       ├── surface.py             # 3D surface plot
+│       ├── metrics.py             # Engineering characterization metrics
+│       └── export.py              # Plotly interactive HTML
 ├── sensor_lab/
-│   ├── __init__.py
-│   ├── clean.py                 # CSV parsing and cleaning
-│   ├── analysis.py              # Physics calculations and metrics
-│   ├── viz.py                   # Plot generation
-│   ├── processor.py             # Orchestration: ties everything together
-│   └── watcher.py               # File system watching (legacy)
-├── incoming/                    # Drop CSV files here
-├── processed/                   # Archive of processed CSVs
-├── output/                      # Per-run output folders
-├── requirements.txt             # Python dependencies
-└── README.md
+│   ├── clean.py                   # CSV parsing and cleaning
+│   ├── analysis.py                # Physics metrics and circular statistics
+│   ├── viz.py                     # Time-series plot generation
+│   ├── processor.py               # Pipeline orchestrator
+│   └── watcher.py                 # File system watching
+├── tests/
+│   ├── test_detector.py
+│   ├── test_interpolator.py
+│   ├── test_heatmap.py
+│   └── test_metrics.py
+├── incoming/                      # Drop CSV files here
+├── processed/                     # Archive of processed CSVs
+├── output/                        # Per-run output folders
+└── requirements.txt
 ```
 
----
-
-## Data Format
-
-### Minimal CSV Format (Required)
-
-```csv
-time,mx,my,mz
-0.0,10.5,20.3,5.2
-0.1,10.6,20.2,5.3
-```
-
-- **time**: Elapsed time (seconds) or arbitrary sequence number
-- **mx, my, mz**: Magnetometer readings (any consistent units)
-
-### Robust Parsing
-
-MagPlotter gracefully handles:
-- Comment lines (prefixed with `#` or `//`)
-- Log lines mixed with data
-- Extra columns (ignored)
-- Missing or malformed rows (skipped)
-
-Example with comments:
-```csv
-# BNO055 Calibration Test
-# 2024-06-18 10:00 AM
-time,mx,my,mz
-# Starting measurement
-0.0,10.5,20.3,5.2
-0.1,10.6,20.2,5.3
-# Drift phase
-0.2,10.4,20.4,5.1
-```
-
----
-
-## Generated Reports
-
-### summary.json
-
-Complete metrics in JSON format:
-
-```json
-{
-  "run_name": "experiment_01.csv",
-  "path": "/path/to/incoming/experiment_01.csv",
-  "metrics": {
-    "axis_stats": {
-      "mx": {"mean": 10.5, "std": 0.3, "min": 9.8, "max": 11.2, "drift": 0.4},
-      "my": {"mean": 20.3, "std": 0.25, ...},
-      "mz": {"mean": 5.1, "std": 0.2, ...}
-    },
-    "B_mean": 23.42,
-    "B_std": 0.015,
-    "B_drift": -0.02,
-    "heading_mean_deg": 62.48,
-    "heading_std_deg": 0.35,
-    "noise_metric": 0.25,
-    "num_samples": 1000,
-    "time_span_s": 99.9
-  },
-  "notes_from_file": null,
-  "header_comments": [...]
-}
-```
-
-### report.txt
-
-Human-readable summary:
+### Pipeline
 
 ```
-MagPlotter Run Report
-====================
-
-Run: experiment_01.csv
-Source path: /path/to/incoming/experiment_01.csv
-
-Metrics:
-{...JSON metrics...}
-
-Notes:
-(none)
-```
-
-### Plots
-
-- **field_strength_plot.png**: Magnetic field magnitude |B| = √(mx² + my² + mz²) vs time
-- **heading_plot.png**: Heading angle (degrees) = arctan2(my, mx) vs time, with circular statistics
-- **axes_plot.png**: Individual magnetometer axes (mx, my, mz) vs time
-
----
-
-## Examples
-
-### Example 1: Process One Experiment
-
-```bash
-# Prepare
-cp ~/Downloads/test_run_20240618.csv incoming/
-
-# Process
-python main.py
-
-# Inspect
-cat output/test_run_20240618/summary.json
-open output/test_run_20240618/field_strength_plot.png  # on macOS
-# or
-xdg-open output/test_run_20240618/field_strength_plot.png  # on Linux
-```
-
-### Example 2: Batch Process Multiple Experiments
-
-```bash
-# Prepare (copy multiple files)
-cp ~/experiment_data/*.csv incoming/
-
-# Process all at once
-python main.py
-
-# Each gets its own output folder:
-# output/experiment_01/
-# output/experiment_02/
-# output/experiment_03/
-# ...
-```
-
-### Example 3: Continuous Monitoring
-
-```bash
-# Start the watcher
-python main.py --watch
-
-# In another terminal, drop new files:
-cp new_data.csv incoming/
-
-# Watcher automatically detects and processes them
-# [watcher] Processing new file: new_data.csv
-# [watcher] ✓ new_data.csv completed
-```
-
-### Example 4: Process in a Non-Standard Location
-
-```bash
-# Process a specific folder
-python main.py /home/user/magnetometer_lab
-
-# Watch that folder
-python main.py /home/user/magnetometer_lab --watch
+CSV
+ └─ Validation & Cleaning     (sensor_lab/clean.py)
+     └─ Time-Series Analysis  (sensor_lab/analysis.py)
+         └─ TS Plots          (sensor_lab/viz.py)
+             └─ Field Mapping (src/field_mapping/)  ← skipped if no X/Y columns
+                 └─ Report    (src/report_generator.py)
+                     └─ Archive to processed/
 ```
 
 ---
 
 ## Understanding the Metrics
 
-### Field Strength (|B|)
+### Time-Series Metrics
 
-The magnitude of the magnetic field vector:
+**Field Magnitude** — `|B| = √(mx² + my² + mz²)`
 
-$$|B| = \sqrt{m_x^2 + m_y^2 + m_z^2}$$
+- `B_mean` — average field strength
+- `B_std` — variation (noise floor indicator)
+- `B_drift` — change from first to last sample (±0 = stable)
 
-- **B_mean**: Average field strength
-- **B_std**: Field strength variation (noise)
-- **B_drift**: Change from start to end (±0 is good; large values suggest sensor drift or environment change)
+**Heading** — `θ = arctan2(my, mx)` using circular statistics
 
-### Heading
+- `heading_mean_deg` — dominant compass direction (0–360°)
+- `heading_std_deg` — angular stability (smaller = steadier)
 
-The compass direction computed from the XY plane:
+**Noise Metric** — mean standard deviation across all three axes; smaller = quieter sensor.
 
-$$\theta = \arctan2(m_y, m_x)$$
+### Spatial Field Metrics
 
-Returns 0–360°. Uses **circular statistics** (mean and std dev are computed on the unit circle, not linearly).
+**Uniformity** — `(1 − σ/μ) × 100%`. 100% means a perfectly flat field; lower values indicate a non-uniform distribution.
 
-- **heading_mean_deg**: Most common direction
-- **heading_std_deg**: Direction stability (smaller is steadier)
+**Magnetic Center** — the |B|-weighted centroid. Differs from geometric center when the field is asymmetric — useful for locating the effective source position.
 
-### Noise Metric
+**Gradient** — computed via numpy on the interpolated grid. High gradient regions have rapidly changing field strength; important for applications sensitive to field uniformity.
 
-Average standard deviation across all three axes:
+**Symmetry Score** — compares each grid cell against its 180°-rotated counterpart through the magnetic center. Score of 1.0 = perfectly symmetric.
 
-$$\text{noise} = \frac{1}{3}(\sigma_{mx} + \sigma_{my} + \sigma_{mz})$$
+**Radial Falloff** — mean |B| in radial bands from the magnetic center. Reveals whether the field follows a dipole-like 1/r³ decay or a more complex profile.
 
-Indicates sensor noise or environmental variation. Smaller is quieter.
+---
 
-### Drift
+## Examples
 
-Per-axis change from first to last sample:
+### Process a time-series run
 
-$$\text{drift} = \text{value}_{\text{final}} - \text{value}_{\text{initial}}$$
+```bash
+cp lab_run_20240618.csv incoming/
+python main.py
+cat output/lab_run_20240618/report.txt
+```
 
-Reveals long-term sensor drift. Should be ~0 for stable measurements.
+### Process a spatial field map
+
+```bash
+cp magnet_scan.csv incoming/   # columns: X_mm, Y_mm, Bmag
+python main.py
+open output/magnet_scan/field_heatmap.png
+open output/magnet_scan/interactive_heatmap.html
+cat output/magnet_scan/field_metrics.json
+```
+
+### Continuous monitoring
+
+```bash
+python main.py --watch
+# In another terminal:
+cp new_scan.csv incoming/
+# Watcher detects and processes automatically
+```
+
+### Batch process multiple experiments
+
+```bash
+cp ~/experiments/*.csv incoming/
+python main.py
+# Each produces its own output/ subfolder
+```
 
 ---
 
 ## Troubleshooting
 
-### "No CSV files found"
+**"Found 0 CSV files"** — ensure files are in `incoming/` with a `.csv` extension.
 
-**Problem**: `python main.py` reports "Found 0 CSV files."
+**Field mapping not running** — check that your CSV has X and Y columns (any of the supported aliases). Run `python main.py` and look for the `detector:` log line.
 
-**Solution**: Ensure your CSV files are in the `incoming/` folder with `.csv` extension:
-```bash
-ls incoming/
-# Should show your .csv files
-```
-
-### Plots Don't Generate
-
-**Problem**: PNG files are missing from output folder.
-
-**Likely cause**: Missing matplotlib or graphical backend.
-
-**Solution**:
-```bash
-pip install matplotlib
-```
-
-If using a headless system, ensure matplotlib is configured:
+**Plots don't generate on a headless server:**
 ```bash
 export MPLBACKEND=Agg
 python main.py
 ```
 
-### Watcher Not Detecting New Files
-
-**Problem**: `--watch` mode runs but doesn't process new files.
-
-**Likely cause**: watchdog not installed.
-
-**Solution**:
+**Interactive HTML not generated** — install Plotly:
 ```bash
-pip install watchdog
+pip install plotly
 ```
 
-### CSV Parsing Errors
+**Sparse data warning / high NaN fraction** — fewer than ~10 measurement points spread across the scan area will produce a poor interpolation. Switch to `method: nearest` in `config/config.yaml` for sparse datasets.
 
-**Problem**: "Exception processing file..."
-
-**Check**:
-1. CSV has at least 4 columns: `time, mx, my, mz`
-2. First numeric column is readable as a float
-3. File is not being written to (wait before processing)
-
-**If stuck**: Add a `.txt` notes file next to your CSV and try again. Files with notes are logged for debugging.
+**CSV parsing errors** — MagPlotter skips malformed rows automatically. If all rows are skipped, check that at least 3–4 numeric columns are present.
 
 ---
 
-## Architecture & Design
+## Testing
 
-### Module Overview
-
-- **main.py**: CLI entry point. Handles argument parsing and orchestrates one-off or watching modes.
-- **sensor_lab/processor.py**: Master orchestrator. Calls clean → analyze → plot → save.
-- **sensor_lab/clean.py**: Robust CSV parsing. Strips comments, handles malformed rows.
-- **sensor_lab/analysis.py**: Physics computations. Circular statistics, magnitude, heading, noise.
-- **sensor_lab/viz.py**: Matplotlib plotting. Three standard visualizations.
-- **src/report_generator.py**: Writes human-readable `report.txt`.
-- **src/file_manager.py**: Folder discovery and management.
-- **config/settings.json**: Configuration (currently minimal; extensible).
-
-### Design Principles
-
-1. **Separation of Concerns**: Each module has a single responsibility.
-2. **Reusability**: Core logic in `sensor_lab` is independent of the CLI; future GUIs can reuse it.
-3. **Robustness**: Graceful handling of malformed data, comments, and edge cases.
-4. **Clarity**: Clear naming, docstrings, and modular structure.
-5. **Extensibility**: Easy to add new analyses, output formats, or visualizations.
-
-### Future Phases
-
-**Phase 2 (Current)**: Automatic folder watching with `--watch` flag.
-
-**Phase 3**: Desktop GUI wrapping the processing logic, allowing users to:
-- Browse and select input files
-- Configure processing options
-- View plots inline
-- Export reports
-
-The backend is already designed to support this; only the GUI layer needs to be added.
+```bash
+python -m pytest tests/ -v
+# 60 tests: detector, interpolator, heatmap/contour/surface/vectorfield, metrics
+```
 
 ---
 
-## Performance Notes
+## Architecture Notes
 
-- **CSV Parsing**: O(n) per file (n = number of rows)
-- **Analysis**: O(n) per file
-- **Plotting**: ~1–2 seconds per plot (depends on matplotlib and system)
-- **Typical 1000-row file**: Processes in <5 seconds end-to-end
-
-For very large files (100K+ rows), consider:
-- Downsampling in the CSV before ingestion
-- Using the Parquet output for repeat analysis
+- **Independent field mapping reader** — `src/field_mapping` reads the raw CSV directly (bypassing `sensor_lab/clean.py`'s column aliasing) to preserve all spatial columns.
+- **Non-destructive integration** — field mapping is a try/except block in `processor.py`; any failure skips mapping and continues the rest of the pipeline.
+- **Extensible schema** — `FieldSchema` captures all detected column names; adding new column aliases only requires updating the pattern lists in `detector.py`.
+- **Designed for future expansion** — the architecture is ready for 3D volumetric reconstruction, live sensor streaming, Hall sensor characterization, motor/Halbach array mapping, and AS5600/BNO055 integration.
 
 ---
 
-## Contributing & Extending
+## Dependencies
 
-To add a new analysis metric:
-
-1. Add a function in `sensor_lab/analysis.py`
-2. Call it from `compute_all_metrics()`
-3. It will automatically appear in `summary.json`
-
-To add a new plot type:
-
-1. Add a function in `sensor_lab/viz.py`
-2. Call it from `sensor_lab/processor.py`
-3. Configure naming convention and save path
-
-To customize reports:
-
-1. Edit `src/report_generator.py`
-2. Modify `generate_report()` to include new fields or formatting
+| Package | Purpose |
+|---------|---------|
+| `numpy`, `pandas` | Data handling |
+| `matplotlib` | All static plots |
+| `scipy` | Spatial interpolation (field mapping) |
+| `plotly` | Interactive HTML exports (optional) |
+| `watchdog` | File system watching (`--watch` mode) |
+| `pyarrow` | Parquet output |
+| `pyyaml` | `config/config.yaml` parsing |
+| `pytest` | Test suite |
 
 ---
 
 ## License
 
-See `LICENSE` file.
-
----
-
-## Support & Questions
-
-For issues, feature requests, or questions, open an issue on GitHub or contact the maintainer.
-
----
-
-**Last Updated**: June 2024
-**Version**: 2.0 (Refactored)
-- **"No incoming directory found"**: Make sure you placed your CSV in `incoming/`.
-- **"ModuleNotFoundError"**: Run `pip install -r requirements.txt` first.
-- **Plots look weird**: Check that your X, Y, Z columns have valid numbers. The pipeline skips rows with missing X or Y.
-
-### Automation: Watch for new files (optional)
-To automatically process new CSVs as they arrive:
-```bash
-python -m sensor_lab.watcher /path/to/magplotter
-```
-Leave this running. Any CSV you add to `incoming/` will be processed automatically.
-
-GitHub & Version Control
-------------------------
-**Important: Local changes are NOT automatically pushed to GitHub.**
-
-To save your work:
-```bash
-cd /path/to/magplotter
-git status                  # see what changed
-git add -A                  # stage all changes
-git commit -m "Updated processor for Parquet + old data mirroring"
-git push origin main        # push to GitHub
-```
-
-If you made changes on a branch (e.g., `Sensor_lab/clean.py`), push that branch:
-```bash
-git push origin Sensor_lab/clean.py
-```
-
-Notes
------
-- CSVs can include comment lines (start with # or //), logs, or malformed rows — those are ignored.
-- Optional notes files: `run_001_notes.txt` or `run_001.txt` (sibling to the CSV) will be attached to the JSON summary.
-- Heading uses circular statistics (so wrap-around is handled properly).
-- Parquet format is ~2x faster than CSV for large datasets and takes less disk space.
+See `LICENSE`.
