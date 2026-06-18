@@ -1,18 +1,41 @@
-MagPlotter is a magnetometer data processing pipeline that converts raw CSV sensor logs into structured engineering analysis, visualizations, and per-experiment reports.
+# MagPlotter
 
-It is designed for magnetometer characterization workflows in experimental and research environments, where raw magnetic field data must be cleaned, analyzed, and summarized efficiently.
+MagPlotter is a magnetometer data processing pipeline that converts raw CSV sensor logs into structured engineering analysis, visualizations, and per-run reports.
 
-MagPlotter supports:
+It is designed for experimental and research workflows where raw magnetic field measurements must be cleaned, analyzed, and summarized in a reproducible format.
 
--Noise filtering and spike removal from raw sensor readings
--Cleaning and validation of magnetometer CSV logs
--Magnetic field vector analysis (Bx, By, Bz, magnitude)
--Heading computation using circular statistics from XY field components
--Statistical characterization (mean, variance, drift, noise metrics)
--Automated generation of engineering-grade plots and summaries
--Organized per-run output directories for reproducible analysis
+Each input file is treated as an independent experimental run, producing a self-contained output directory with plots, statistical summaries, and machine-readable reports.
 
-Each CSV file is processed into a self-contained output package containing plots, statistical summaries, and structured reports.
+---
+
+# About
+
+MagPlotter is a magnetometer data processing pipeline that converts raw CSV sensor logs into structured engineering analysis, visualizations, and per-run reports.
+
+It is designed for experimental and research workflows where raw magnetic field measurements must be cleaned, analyzed, and summarized in a reproducible format.
+
+MagPlotter processes each input file as an independent experimental run, producing a self-contained output directory containing plots, statistical summaries, and machine-readable reports.
+
+## Core Capabilities
+
+- Cleans and validates raw magnetometer CSV logs  
+- Filters noise and removes invalid or malformed samples  
+- Computes magnetic field vectors (mx, my, mz) and magnitude  
+- Calculates heading using circular statistics  
+- Generates statistical summaries (mean, variance, drift, noise metrics)  
+- Produces standardized engineering plots  
+- Exports structured JSON reports and human-readable summaries  
+- Organizes outputs into isolated per-run folders for traceability  
+
+## Design Goal
+
+The system is built to behave like a laboratory-grade data processing tool:
+
+- One CSV file equals one experimental run  
+- One command produces a complete analysis package  
+- Outputs are structured, reproducible, and easy to compare across experiments  
+
+The architecture is modular and designed for future extension into real-time processing and GUI-based analysis tools.
 
 ## Quick Start
 
