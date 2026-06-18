@@ -2,6 +2,13 @@
 # Start the MagPlotter watcher service
 # This script keeps the watcher running and auto-restarts it if it crashes
 
+# Usage:
+#   bash scripts/start-watcher.sh
+#
+# Security note: this script runs the Python watcher in a loop. Do not
+# run it as root on multi-user systems; prefer a dedicated service user
+# and rotate logs to avoid unbounded growth.
+
 MAGPLOTTER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG_FILE="${MAGPLOTTER_DIR}/logs/watcher.log"
 mkdir -p "${MAGPLOTTER_DIR}/logs"

@@ -1,6 +1,19 @@
 """
 Compute physics-based metrics for a magnetometer run.
 Includes axis stats, |B| metrics, heading (circular stats), noise metric.
+
+Primary functions:
+    compute_all_metrics(df) -> dict
+    axis_stats(df) -> dict
+    magnitude_metrics(df) -> dict
+    heading_metrics(df) -> dict
+
+Notes: functions expect a `pandas.DataFrame` with numeric columns `time, mx, my, mz`.
+If the DataFrame is empty, functions return sensible `None`-filled placeholders.
+
+Security note: this module performs numerical computations only and
+does not touch external resources. Ensure upstream parsing has validated
+and sanitized input data types.
 """
 from typing import Dict, Any
 import numpy as np

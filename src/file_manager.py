@@ -1,6 +1,14 @@
 """Simple file management helpers for MagPlotter CLI.
 
 Functions to list incoming CSVs and ensure output folders exist.
+
+Public functions:
+    list_csv_files(incoming_dir: Path) -> List[Path]
+    ensure_dirs(base_dir: Path, incoming: str = "incoming", processed: str = "processed", output: str = "output")
+
+Security note: these helpers create directories and list files. When
+integrating into multi-user systems, run with appropriate permissions
+and avoid exposing output folders to untrusted writers.
 """
 from pathlib import Path
 from typing import List

@@ -1,7 +1,15 @@
 """
-Simple CLI to process all current CSVs in incoming/ (non-watcher mode).
+Simple CLI to process all current CSVs in `incoming/` (non-watcher mode).
+
 Usage:
-  python run_processor.py /path/to/project_root
+    python run_processor.py /path/to/project_root
+
+This small helper is intended for quick one-off processing in environments
+where the watcher is not required. It calls `sensor_lab.processor.process_file`
+for each CSV in `incoming/`.
+
+Security note: treat input files as untrusted. This script only parses
+numeric CSV fields and will not execute code from input files.
 """
 import sys
 from pathlib import Path

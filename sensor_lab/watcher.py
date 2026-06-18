@@ -2,7 +2,15 @@
 Watchdog-based watcher: monitor the incoming directory and process new CSV files as they appear.
 
 Usage:
-  python -m sensor_lab.watcher /path/to/project_root
+    python -m sensor_lab.watcher /path/to/project_root
+
+This module provides a stable-file watcher that waits for file-size
+stability before invoking `sensor_lab.processor.process_file` to avoid
+processing partially written files.
+
+Security note: watcher processes files found in `incoming/`. Treat
+incoming files as untrusted and run watchers with least privilege; do
+not run the watcher as an elevated user in hostile environments.
 """
 import time
 import sys

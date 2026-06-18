@@ -2,6 +2,12 @@
 
 Creates a human-readable `report.txt` inside a run folder summarizing
 key metrics, notes, and provenance.
+
+Primary function:
+    generate_report(summary: Dict[str, Any], run_out_dir: Path) -> Path|None
+
+Security note: this module writes to local output directories. Avoid
+writing reports into locations controlled by untrusted users.
 """
 from pathlib import Path
 from typing import Any, Dict

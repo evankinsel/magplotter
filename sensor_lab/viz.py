@@ -1,5 +1,17 @@
 """
 Plotting functions: save B(t), axes(t), heading(t) as PNG files.
+
+Functions:
+    plot_magnitude(df, outpath, title=...)
+    plot_axes(df, outpath, title=...)
+    plot_heading(df, outpath, title=...)
+
+These helpers use `matplotlib` and save figures to `outpath`. On headless
+systems, set `MPLBACKEND=Agg` or ensure an appropriate backend is available.
+
+Security note: plotting uses only numerical data and writes files to
+the local filesystem; it does not execute file contents. Still, be
+cautious when writing into shared output folders.
 """
 from typing import Dict
 import matplotlib.pyplot as plt
@@ -18,7 +30,7 @@ def plot_magnitude(df: pd.DataFrame, outpath: str, title: str = "Magnetic magnit
     plt.figure(figsize=(6, 3))
     plt.plot(df["time"], B, "-", lw=1)
     plt.xlabel("time (s)")
-    plt.ylabel("|B|")
+    plt.ylabel("|B| (µT)")
     plt.title(title)
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
@@ -31,11 +43,11 @@ def plot_axes(df: pd.DataFrame, outpath: str, title: str = "Raw axes"):
     if df.empty:
         plt.text(0.5, 0.5, "No data", ha="center")
     else:
-        plt.plot(df["time"], df["mx"], label="mx", lw=1)
-        plt.plot(df["time"], df["my"], label="my", lw=1)
-        plt.plot(df["time"], df["mz"], label="mz", lw=1)
+        plt.plot(df["time"], df["mx"], label="mx (µT)", lw=1)
+        plt.plot(df["time"], df["my"], label="my (µT)", lw=1)
+        plt.plot(df["time"], df["mz"], label="mz (µT)", lw=1)
         plt.xlabel("time (s)")
-        plt.ylabel("magnetic (units)")
+        plt.ylabel("magnetic field (µT)")
         plt.legend()
         plt.grid(True, alpha=0.3)
     plt.title(title)
