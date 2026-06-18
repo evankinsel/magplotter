@@ -1,6 +1,16 @@
 """
 Top-level processing orchestration: takes a CSV path, runs cleaning, metrics, plotting,
 saves JSON summary, and moves the raw CSV to processed directory.
+
+Public API:
+    process_file(csv_path, base_dir=..., incoming_dir_name=..., processed_dir_name=..., output_dir_name=...)
+
+This module coordinates the pipeline steps (parse -> analyze -> plot -> save).
+It attempts to be robust: non-fatal failures in optional outputs (Parquet,
+plots) are ignored so processing of other runs continues.
+
+Security note: input files are treated as untrusted data. The processor
+reads numeric fields only and never executes content from input CSVs.
 """
 import json
 import os

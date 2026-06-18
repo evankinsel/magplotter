@@ -3,6 +3,14 @@ CSV cleaning utilities: parse messy CSVs, extract numeric rows, and return a pan
 time, mx, my, mz
 
 Robust to logs, corrupted rows, comments, and missing metadata.
+
+Functions:
+    parse_raw_csv(path, comment_prefixes=("#","//")) -> (DataFrame, header_comments)
+
+Security note: this module performs defensive parsing and treats all
+input as untrusted. It only converts the first four fields to floats and
+skips any non-numeric or malformed rows; it will not evaluate or execute
+file contents.
 """
 from typing import Tuple, List
 import csv

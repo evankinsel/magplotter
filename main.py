@@ -7,6 +7,13 @@ Usage:
     python main.py /path/to/project     # process in a specific folder
     python main.py /path/to/project --watch  # watch a specific folder
 
+This module provides a simple command-line entrypoint for batch or
+watcher-based processing. It delegates actual work to `sensor_lab.processor`.
+
+Security note: input CSV files are treated as untrusted data. The CLI
+parses numeric fields only and does not execute code from input files.
+Exercise normal operational caution when running in multi-user or
+networked environments.
 """
 from pathlib import Path
 import sys
