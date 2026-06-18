@@ -13,11 +13,14 @@ input as untrusted. It only converts the first four fields to floats and
 skips any non-numeric or malformed rows; it will not evaluate or execute
 file contents.
 """
-from typing import Tuple, List
 import csv
+import logging
 import re
+from typing import Tuple, List
+
 import pandas as pd
 
+logger = logging.getLogger(__name__)
 
 # Maps common column name variants to canonical names used by the rest of the pipeline.
 # Add more aliases here as new sensor formats are encountered.
@@ -50,6 +53,7 @@ def parse_raw_csv(path: str, comment_prefixes=("#", "//")) -> Tuple[pd.DataFrame
          - 3 tokens  -> synthesized index as time, x, y, z
          - <3 tokens -> skip row
     """
+    logger.info("parsing: %s", path)
     header_comments: List[str] = []
     rows: List[Tuple[float, float, float, float]] = []
 
@@ -60,13 +64,9 @@ def parse_raw_csv(path: str, comment_prefixes=("#", "//")) -> Tuple[pd.DataFrame
 
     # Populated if/when a header row is detected; maps canonical name -> column index
     header_map: dict | None = None
+    skipped_rows = 0
 
     def _unwrap_if_single_quoted_field(parsed: List[str]) -> List[str]:
-        """
-        If csv.reader returned exactly one field and that field contains
-        commas or tabs, the entire row was probably quoted as a single value.
-        Re-parse the inner content to recover individual columns.
-        """
         if len(parsed) == 1:
             inner = parsed[0].strip()
             if "," in inner or "\t" in inner:
@@ -77,7 +77,6 @@ def parse_raw_csv(path: str, comment_prefixes=("#", "//")) -> Tuple[pd.DataFrame
         return parsed
 
     def _try_strict(fields: List[str]) -> Tuple[float, float, float, float] | None:
-        """Try to read the first four fields as (time, mx, my, mz). Returns None on failure."""
         if len(fields) >= 4:
             try:
                 return (float(fields[0]), float(fields[1]), float(fields[2]), float(fields[3]))
@@ -86,7 +85,6 @@ def parse_raw_csv(path: str, comment_prefixes=("#", "//")) -> Tuple[pd.DataFrame
         return None
 
     def _flexible_extract(parsed: List[str], raw_line: str) -> List[float]:
-        """Flatten, strip timestamps, tokenize, and return all numeric tokens found."""
         flat = " ".join(parsed) if parsed else raw_line
         flat = timestamp_re.sub(" ", flat)
         tokens = re.split(r"[,\t;|]+|\s+", flat.strip())
@@ -113,10 +111,8 @@ def parse_raw_csv(path: str, comment_prefixes=("#", "//")) -> Tuple[pd.DataFrame
             except Exception:
                 parsed = [line]
 
-            # Step 1: unwrap single-field quoted rows
             parsed = _unwrap_if_single_quoted_field(parsed)
 
-            # Step 2: header detection (only on first non-comment row if no header yet)
             if header_map is None:
                 non_empty = [f.strip() for f in parsed if f.strip()]
                 all_text = non_empty and all(not numeric_re.fullmatch(f) for f in non_empty)
@@ -126,31 +122,32 @@ def parse_raw_csv(path: str, comment_prefixes=("#", "//")) -> Tuple[pd.DataFrame
                         canonical = COLUMN_ALIASES.get(col.strip().lower())
                         if canonical:
                             header_map[canonical] = i
-                    continue  # this row is a header, not data
+                    logger.debug("header row detected: %s", [c.strip() for c in parsed])
+                    continue
 
-            # Step 3: strict parse
             result = _try_strict(parsed)
             if result:
                 rows.append(result)
                 continue
 
-            # Step 4: flexible fallback
             nums = _flexible_extract(parsed, line)
             if len(nums) >= 4:
                 rows.append((nums[0], nums[1], nums[2], nums[3]))
             elif len(nums) == 3:
-                # No explicit time: synthesize a monotonically increasing sample index
                 rows.append((float(len(rows)), nums[0], nums[1], nums[2]))
-            # else: fewer than 3 numeric values -> skip row
+            else:
+                skipped_rows += 1
+
+    if skipped_rows:
+        logger.debug("skipped %d unparseable row(s) in %s", skipped_rows, path)
 
     df = pd.DataFrame(rows, columns=["time", "mx", "my", "mz"])
     if not df.empty:
         df = df.sort_values("time").reset_index(drop=True)
 
-    # Fallback: some CSVs use ISO timestamp strings (e.g. "2026-01-01T12:00:00") with
-    # named columns like timestamp,x_nt,y_nt,z_nt. If the numeric parse produced no rows,
-    # try a pandas-based parse that converts timestamps to seconds from first sample.
+    # Fallback: some CSVs use ISO timestamp strings with named columns
     if df.empty:
+        logger.info("numeric parse yielded no rows — trying ISO timestamp fallback for %s", path)
         try:
             df_raw = pd.read_csv(path, comment=list(comment_prefixes)[0])
         except Exception:
@@ -183,7 +180,13 @@ def parse_raw_csv(path: str, comment_prefixes=("#", "//")) -> Tuple[pd.DataFrame
                         mz = pd.to_numeric(df_raw[axis_map["mz"]], errors="coerce")
                         df = pd.DataFrame({"time": time_seconds, "mx": mx, "my": my, "mz": mz})
                         df = df.dropna().reset_index(drop=True)
+                        logger.info("ISO timestamp fallback succeeded: %d rows from %s", len(df), path)
                 except Exception:
-                    pass
+                    logger.exception("ISO timestamp fallback failed for %s", path)
+
+    if df.empty:
+        logger.warning("no data rows extracted from %s", path)
+    else:
+        logger.info("extracted %d rows from %s", len(df), path)
 
     return df, header_comments

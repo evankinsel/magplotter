@@ -15,9 +15,13 @@ Security note: this module performs numerical computations only and
 does not touch external resources. Ensure upstream parsing has validated
 and sanitized input data types.
 """
+import logging
 from typing import Dict, Any
+
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 
 def axis_stats(df: pd.DataFrame) -> Dict[str, Dict[str, float]]:
@@ -86,15 +90,17 @@ def noise_metric(df: pd.DataFrame) -> float:
 
 
 def compute_all_metrics(df: pd.DataFrame) -> Dict[str, Any]:
+    logger.debug("computing metrics for %d samples", len(df))
     metrics = {}
     metrics["axis_stats"] = axis_stats(df)
     metrics.update(magnitude_metrics(df))
     metrics.update(heading_metrics(df))
     metrics["noise_metric"] = noise_metric(df)
-    # additional metadata
     metrics["num_samples"] = int(len(df))
     if not df.empty:
         metrics["time_span_s"] = float(df["time"].iloc[-1] - df["time"].iloc[0]) if len(df) >= 2 else 0.0
     else:
         metrics["time_span_s"] = None
+    logger.debug("metrics computed: num_samples=%d, B_mean=%s, time_span_s=%s",
+                 metrics["num_samples"], metrics.get("B_mean"), metrics.get("time_span_s"))
     return metrics

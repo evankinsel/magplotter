@@ -9,24 +9,25 @@ Primary function:
 Security note: this module writes to local output directories. Avoid
 writing reports into locations controlled by untrusted users.
 """
+import json
+import logging
 from pathlib import Path
 from typing import Any, Dict
-import json
+
+logger = logging.getLogger(__name__)
 
 
 def generate_report(summary: Dict[str, Any], run_out_dir: Path):
-    """Write a short `report.txt` describing the run and key metrics.
-
-    summary: dict as produced by `sensor_lab.processor.process_file`
-    run_out_dir: Path to the run output folder
-    """
+    """Write a short `report.txt` describing the run and key metrics."""
     run_out_dir = Path(run_out_dir)
     report_path = run_out_dir / "report.txt"
+    run_name = summary.get("run_name", "unknown")
+    logger.info("writing report for run: %s -> %s", run_name, report_path)
     try:
         with open(report_path, "w", encoding="utf-8") as fh:
             fh.write("MagPlotter Run Report\n")
             fh.write("====================\n\n")
-            fh.write(f"Run: {summary.get('run_name')}\n")
+            fh.write(f"Run: {run_name}\n")
             fh.write(f"Source path: {summary.get('path')}\n\n")
             fh.write("Metrics:\n")
             metrics = summary.get("metrics", {})
@@ -34,7 +35,6 @@ def generate_report(summary: Dict[str, Any], run_out_dir: Path):
                 try:
                     fh.write(json.dumps(metrics, indent=2, ensure_ascii=False))
                 except Exception:
-                    # Fallback to simple print
                     for k, v in metrics.items():
                         fh.write(f"- {k}: {v}\n")
             else:
@@ -46,6 +46,8 @@ def generate_report(summary: Dict[str, Any], run_out_dir: Path):
             else:
                 fh.write(str(notes))
             fh.write("\n")
+        logger.debug("report written: %s", report_path)
     except Exception:
+        logger.exception("failed to write report for run: %s", run_name)
         return None
     return report_path
