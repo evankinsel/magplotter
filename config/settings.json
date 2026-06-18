@@ -1,0 +1,5 @@
+{
+  "incoming_dir": "incoming",
+  "processed_dir": "processed",
+  "output_dir": "output"
+}

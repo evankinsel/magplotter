@@ -1,0 +1,1 @@
+"""MagPlotter src package."""
