@@ -1,38 +1,18 @@
-# MagPlotter
+MagPlotter is a magnetometer data processing pipeline that converts raw CSV sensor logs into structured engineering analysis, visualizations, and per-experiment reports.
 
-**Professional magnetometer data processing tool for engineering and research.**
+It is designed for magnetometer characterization workflows in experimental and research environments, where raw magnetic field data must be cleaned, analyzed, and summarized efficiently.
 
-A clean, organized application that transforms raw magnetometer CSV files into publication-ready analysis, plots, and reports. Drop files, run one command, get organized output folders with visualizations and statistics.
+MagPlotter supports:
 
----
+-Noise filtering and spike removal from raw sensor readings
+-Cleaning and validation of magnetometer CSV logs
+-Magnetic field vector analysis (Bx, By, Bz, magnitude)
+-Heading computation using circular statistics from XY field components
+-Statistical characterization (mean, variance, drift, noise metrics)
+-Automated generation of engineering-grade plots and summaries
+-Organized per-run output directories for reproducible analysis
 
-## Overview
-
-MagPlotter is a laboratory-grade data processing pipeline for magnetometer experiments. It:
-
-- **Ingests** CSV files with magnetometer readings (time, mx, my, mz)
-- **Cleans** data and validates physical readings
-- **Analyzes** magnetic field properties:
-  - Field magnitude and variation
-  - Heading (compass direction) from XY components
-  - Axis statistics (mean, std dev, drift, range)
-  - Noise metrics
-- **Visualizes** results as high-quality plots
-- **Generates** human-readable reports and machine-readable JSON
-- **Organizes** all outputs into dedicated per-run folders
-
-### Key Features
-
-- ✓ Batch processing of multiple CSV files
-- ✓ Automatic file-system watching (Phase 2)
-- ✓ Clean, modular architecture
-- ✓ Per-run output organization
-- ✓ Circular statistics for heading
-- ✓ Robust parsing (handles comments, malformed rows)
-- ✓ Parquet export for fast data loading
-- ✓ Human-readable reports + JSON summaries
-
----
+Each CSV file is processed into a self-contained output package containing plots, statistical summaries, and structured reports.
 
 ## Quick Start
 
