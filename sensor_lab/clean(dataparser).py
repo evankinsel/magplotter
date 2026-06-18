@@ -23,9 +23,9 @@ import pandas as pd
 # Add more aliases here as new sensor formats are encountered.
 COLUMN_ALIASES = {
     "time": "time", "t": "time", "timestamp": "time", "sample": "time", "idx": "time",
-    "mx": "mx", "x": "mx", "bx": "mx", "mag_x": "mx", "field_x": "mx",
-    "my": "my", "y": "my", "by": "my", "mag_y": "my", "field_y": "my",
-    "mz": "mz", "z": "mz", "bz": "mz", "mag_z": "mz", "field_z": "mz",
+    "mx": "mx", "x": "mx", "bx": "mx", "mag_x": "mx", "field_x": "mx", "x_nt": "mx",
+    "my": "my", "y": "my", "by": "my", "mag_y": "my", "field_y": "my", "y_nt": "my",
+    "mz": "mz", "z": "mz", "bz": "mz", "mag_z": "mz", "field_z": "mz", "z_nt": "mz",
 }
 
 
@@ -146,4 +146,44 @@ def parse_raw_csv(path: str, comment_prefixes=("#", "//")) -> Tuple[pd.DataFrame
     df = pd.DataFrame(rows, columns=["time", "mx", "my", "mz"])
     if not df.empty:
         df = df.sort_values("time").reset_index(drop=True)
+
+    # Fallback: some CSVs use ISO timestamp strings (e.g. "2026-01-01T12:00:00") with
+    # named columns like timestamp,x_nt,y_nt,z_nt. If the numeric parse produced no rows,
+    # try a pandas-based parse that converts timestamps to seconds from first sample.
+    if df.empty:
+        try:
+            df_raw = pd.read_csv(path, comment=list(comment_prefixes)[0])
+        except Exception:
+            df_raw = None
+
+        if df_raw is not None and not df_raw.empty:
+            cols_lower = {c.lower(): c for c in df_raw.columns}
+            time_col = None
+            for candidate in ("time", "timestamp", "date", "datetime"):
+                if candidate in cols_lower:
+                    time_col = cols_lower[candidate]
+                    break
+
+            axis_map = {}
+            for candidate, key in [("mx", "mx"), ("my", "my"), ("mz", "mz"),
+                                   ("x_nt", "mx"), ("y_nt", "my"), ("z_nt", "mz")]:
+                if candidate in cols_lower:
+                    axis_map[key] = cols_lower[candidate]
+
+            if time_col is not None and all(k in axis_map for k in ("mx", "my", "mz")):
+                try:
+                    times = pd.to_datetime(df_raw[time_col], errors="coerce")
+                    if times.isna().all():
+                        times = pd.to_datetime(df_raw[time_col].astype(str).str.strip(), errors="coerce")
+                    if not times.isna().all():
+                        t0 = times.dropna().iloc[0]
+                        time_seconds = (times - t0).dt.total_seconds().astype(float)
+                        mx = pd.to_numeric(df_raw[axis_map["mx"]], errors="coerce")
+                        my = pd.to_numeric(df_raw[axis_map["my"]], errors="coerce")
+                        mz = pd.to_numeric(df_raw[axis_map["mz"]], errors="coerce")
+                        df = pd.DataFrame({"time": time_seconds, "mx": mx, "my": my, "mz": mz})
+                        df = df.dropna().reset_index(drop=True)
+                except Exception:
+                    pass
+
     return df, header_comments
