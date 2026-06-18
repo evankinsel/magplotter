@@ -179,7 +179,7 @@ def parse_raw_csv(path: str, comment_prefixes=("#", "//")) -> Tuple[pd.DataFrame
                         my = pd.to_numeric(df_raw[axis_map["my"]], errors="coerce")
                         mz = pd.to_numeric(df_raw[axis_map["mz"]], errors="coerce")
                         df = pd.DataFrame({"time": time_seconds, "mx": mx, "my": my, "mz": mz})
-                        df = df.dropna().reset_index(drop=True)
+                        df = df.dropna().sort_values("time").reset_index(drop=True)
                         logger.info("ISO timestamp fallback succeeded: %d rows from %s", len(df), path)
                 except Exception:
                     logger.exception("ISO timestamp fallback failed for %s", path)
