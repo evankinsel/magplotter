@@ -24,6 +24,18 @@ from .clean import parse_raw_csv
 from .analysis import compute_all_metrics
 from .viz import plot_magnitude, plot_axes, plot_heading
 
+# Field mapping is an optional subsystem — import at module level so the
+# ImportError surfaces clearly during development rather than silently at runtime.
+try:
+    from src.field_mapping import run_field_mapping, load_config as _load_fm_config
+    _FIELD_MAPPING_AVAILABLE = True
+except Exception as _fm_import_err:
+    _FIELD_MAPPING_AVAILABLE = False
+    import logging as _logging
+    _logging.getLogger(__name__).warning(
+        "field mapping subsystem unavailable: %s", _fm_import_err
+    )
+
 logger = logging.getLogger(__name__)
 
 # Import report generator from the new src package if available. Provide a no-op fallback.
@@ -137,6 +149,28 @@ def process_file(
         plot_axes(df, str(run_out_dir / "axes_plot.png"))
     except Exception:
         logger.warning("axes plot failed for run: %s", run_name)
+
+    # Field mapping (runs only when spatial coordinate columns are detected)
+    if _FIELD_MAPPING_AVAILABLE:
+        logger.info("field mapping: attempting for run: %s", run_name)
+        try:
+            fm_config = _load_fm_config(base_dir=base)
+            fm_result = run_field_mapping(
+                str(csv_path),
+                output_dir=run_out_dir,
+                base_dir=base,
+                config=fm_config,
+            )
+            if fm_result is not None:
+                summary["field_mapping"] = fm_result
+                logger.info(
+                    "field mapping: complete — %d file(s) generated",
+                    len(fm_result.get("generated_files", [])),
+                )
+            else:
+                logger.debug("field mapping: no spatial data detected — skipped for run: %s", run_name)
+        except Exception:
+            logger.warning("field mapping failed for run: %s", run_name, exc_info=True)
 
     # JSON summary
     summary_path = run_out_dir / "summary.json"

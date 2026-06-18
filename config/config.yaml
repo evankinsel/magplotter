@@ -1,0 +1,49 @@
+# MagPlotter Configuration
+# ========================
+# This file controls optional processing features.
+# All sections default to enabled=true when this file is absent.
+
+field_mapping:
+  # Master switch — set to false to skip all spatial mapping
+  enabled: true
+
+  interpolation:
+    # Resampling method for scattered data → uniform grid.
+    # Options: nearest | linear | cubic
+    # "linear" is the default; "cubic" gives smoother results but needs more points.
+    method: linear
+    # Grid resolution: number of points along each axis of the interpolated grid.
+    # Range [10, 1000]. Higher values give finer maps but use more memory.
+    grid_resolution: 100
+
+  heatmap:
+    enabled: true
+    # Perceptually-uniform colormaps: viridis, plasma, magma, inferno, cividis
+    colormap: viridis
+
+  contour:
+    enabled: true
+    # Number of contour levels (iso-field lines) drawn on the map
+    levels: 15
+    colormap: plasma
+
+  vector_field:
+    enabled: true
+    # Number of quiver arrow grid points per axis (controls density)
+    density: 20
+    # normalize=true → arrows show direction only (equal length)
+    # normalize=false → arrow length encodes field strength
+    normalize: false
+    colormap: viridis
+
+  surface:
+    enabled: true
+    colormap: viridis
+    # Camera angle for the static 3-D surface PNG
+    elevation: 30
+    azimuth: -60
+
+  interactive:
+    # Requires plotly: pip install plotly
+    # Skipped gracefully when plotly is not installed.
+    enabled: true
