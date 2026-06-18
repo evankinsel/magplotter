@@ -4,17 +4,7 @@ MagPlotter is a magnetometer data processing pipeline that converts raw CSV sens
 
 It is designed for experimental and research workflows where raw magnetic field measurements must be cleaned, analyzed, and summarized in a reproducible format.
 
-Each input file is treated as an independent experimental run, producing a self-contained output directory with plots, statistical summaries, and machine-readable reports.
-
----
-
-# About
-
-MagPlotter is a magnetometer data processing pipeline that converts raw CSV sensor logs into structured engineering analysis, visualizations, and per-run reports.
-
-It is designed for experimental and research workflows where raw magnetic field measurements must be cleaned, analyzed, and summarized in a reproducible format.
-
-MagPlotter processes each input file as an independent experimental run, producing a self-contained output directory containing plots, statistical summaries, and machine-readable reports.
+Each input file is treated as an independent experimental run, producing a self-contained output directory containing plots, statistical summaries, and machine-readable reports.
 
 ## Core Capabilities
 
