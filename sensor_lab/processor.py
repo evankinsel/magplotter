@@ -71,7 +71,7 @@ def process_file(
     base_dir: str = ".",
     incoming_dir_name: str = "incoming",
     processed_dir_name: str = "processed",
-    output_dir_name: str = "output/runs",
+    output_dir_name: str = "output",
 ) -> dict:
     csv_path = Path(csv_path)
     base = Path(base_dir)
@@ -194,24 +194,6 @@ def process_file(
             logf.write(f"summary: {summary_path}\n")
     except Exception:
         logger.warning("could not write processing_log.txt for run: %s", run_name)
-
-    # Mirror outputs under output/old/runs for old datasets
-    try:
-        if "old" in csv_path.name.lower() or "old" in str(csv_path.parent).lower():
-            alt_run_out = base / "output" / "old" / "runs" / csv_path.stem
-            alt_run_out.mkdir(parents=True, exist_ok=True)
-            logger.debug("mirroring outputs to legacy path: %s", alt_run_out)
-            for fname in ["cleaned_data.csv", "cleaned_data.parquet",
-                          "summary.json", "field_strength_plot.png",
-                          "heading_plot.png", "axes_plot.png"]:
-                src = run_out_dir / fname
-                try:
-                    if src.exists():
-                        shutil.copy(str(src), str(alt_run_out / fname))
-                except Exception:
-                    pass
-    except Exception:
-        logger.debug("legacy mirror skipped for run: %s", run_name)
 
     # Move raw CSV to processed
     try:
