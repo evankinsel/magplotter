@@ -227,8 +227,7 @@ If the file is absent, all features default to enabled with sensible values.
 magplotter/
 ├── main.py                        # CLI entrypoint (batch or --watch)
 ├── config/
-│   ├── settings.json              # Basic directory config
-│   └── config.yaml                # Field mapping config
+│   └── config.yaml                # All runtime config (field mapping, interpolation, plots)
 ├── src/
 │   ├── file_manager.py            # File discovery and folder management
 │   ├── report_generator.py        # report.txt generation

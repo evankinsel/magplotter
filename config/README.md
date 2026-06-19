@@ -1,6 +1,6 @@
 Configuration files for MagPlotter
 
-- `settings.json`: project-level configuration (paths, defaults). Currently minimal; intended for future options such as default output formats, plot styles, and watcher settings.
+- `config.yaml`: all runtime configuration — field mapping toggles, interpolation method, grid resolution, colormap choices, and interactive export settings.
 
 Notes:
-- This folder contains machine-readable config. Prefer editing `settings.json` with care and keep backups when experimenting.
+- Edit `config.yaml` to tune field mapping behaviour. The file is optional; sensible defaults are used when it is absent.
