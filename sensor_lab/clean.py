@@ -1,15 +1,16 @@
 """
 CSV cleaning utilities: parse messy CSVs, extract numeric rows, and return a pandas DataFrame with columns:
-time, mx, my, mz
+time, mx, my, mz, [heading — when reported by the sensor]
 
 Robust to logs, corrupted rows, comments, missing metadata, alternate column names,
-and rows where all values are wrapped in a single outer quoted field.
+rows where all values are wrapped in a single outer quoted field, and
+key:value pair formats (e.g. "13:26:05.144 -> X:-12.3 Y:4.5 Z:-6.7 Heading:120.0 Row:0").
 
 Functions:
     parse_raw_csv(path, comment_prefixes=("#","//")) -> (DataFrame, header_comments)
 
 Security note: this module performs defensive parsing and treats all
-input as untrusted. It only converts the first four fields to floats and
+input as untrusted. It only converts recognised fields to floats and
 skips any non-numeric or malformed rows; it will not evaluate or execute
 file contents.
 """
@@ -29,17 +30,52 @@ COLUMN_ALIASES = {
     "mx": "mx", "x": "mx", "bx": "mx", "mag_x": "mx", "field_x": "mx", "x_nt": "mx",
     "my": "my", "y": "my", "by": "my", "mag_y": "my", "field_y": "my", "y_nt": "my",
     "mz": "mz", "z": "mz", "bz": "mz", "mag_z": "mz", "field_z": "mz", "z_nt": "mz",
+    "heading": "heading", "hdg": "heading", "azimuth": "heading",
+    "yaw": "heading", "compass": "heading", "bearing": "heading",
 }
+
+# key:value pairs — key starts with a letter/underscore, value is a signed float/int
+_KV_RE = re.compile(r"\b([A-Za-z_]\w*):\s*([+-]?\d+(?:\.\d*)?(?:[eE][+-]?\d+)?)")
+# wall-clock timestamp HH:MM:SS[.fractional]
+_WALL_TIME_RE = re.compile(r"\b(\d{1,2}):(\d{2}):(\d{2})(?:\.(\d+))?\b")
+
+
+def _wall_time_to_sec(line: str) -> "float | None":
+    """Return seconds-since-midnight for the first HH:MM:SS[.sss] token in line, or None."""
+    m = _WALL_TIME_RE.search(line)
+    if not m:
+        return None
+    h, mi, s = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    frac = float("0." + m.group(4)) if m.group(4) else 0.0
+    return h * 3600 + mi * 60 + s + frac
+
+
+def _extract_kv(line: str) -> dict:
+    """
+    Extract key:value pairs from a line using COLUMN_ALIASES for name resolution.
+    Unrecognised keys (e.g. Row) and the 'time' alias are silently ignored —
+    time is handled separately via the wall-clock timestamp in the line.
+    Returns a dict of {canonical_name: float}.
+    """
+    result = {}
+    for key, val_str in _KV_RE.findall(line):
+        canonical = COLUMN_ALIASES.get(key.lower())
+        if canonical and canonical != "time":
+            try:
+                result[canonical] = float(val_str)
+            except ValueError:
+                pass
+    return result
 
 
 def parse_raw_csv(path: str, comment_prefixes=("#", "//")) -> Tuple[pd.DataFrame, List[str]]:
     """
     Open a CSV that may contain startup logs or comment lines.
     Returns (clean_df, header_comments)
-    - clean_df: DataFrame with float columns time, mx, my, mz (may be empty)
+    - clean_df: DataFrame with float columns time, mx, my, mz (and optionally heading)
     - header_comments: list of comment lines found before data (kept as notes)
 
-    Parsing strategy:
+    Parsing strategy (tried in order, first match wins):
     1. Unwrap quoted rows: if csv.reader returns a single field whose contents
        contain commas or tabs (e.g. each row is stored as "0.01,12.4,-5.2,9.8"),
        re-parse the inner string so downstream logic sees individual fields.
@@ -47,23 +83,29 @@ def parse_raw_csv(path: str, comment_prefixes=("#", "//")) -> Tuple[pd.DataFrame
        in all fields, treat it as a header and build a column alias map so
        alternate names (x/y/z, bx/by/bz, mag_x/mag_y/mag_z, etc.) are accepted.
     3. Strict parse: attempt to convert the first four fields directly to floats.
-    4. Flexible fallback: flatten the row, strip timestamps, tokenize on any
+    4. Key:value extraction: look for key:value pairs (e.g. X:-12.3 Y:4.5 Z:-6.7
+       Heading:120.0) using COLUMN_ALIASES. Wall-clock timestamps (HH:MM:SS[.sss])
+       are converted to seconds relative to the first such timestamp seen.
+       Unrecognised keys such as Row are ignored. The heading column is included
+       when present.
+    5. Flexible fallback: flatten the row, strip timestamps, tokenize on any
        separator, collect numeric tokens, and interpret as:
-         - 4+ tokens -> time, x, y, z
-         - 3 tokens  -> synthesized index as time, x, y, z
+         - 4+ tokens -> time, mx, my, mz
+         - 3 tokens  -> synthesized index as time, mx, my, mz
          - <3 tokens -> skip row
     """
     logger.info("parsing: %s", path)
     header_comments: List[str] = []
-    rows: List[Tuple[float, float, float, float]] = []
+    rows: List[dict] = []
+    t0_abs: "float | None" = None  # first wall-clock time seen (seconds since midnight)
 
     # Matches floats, ints, and scientific notation (signed allowed)
     numeric_re = re.compile(r"^[+-]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][+-]?\d+)?$")
-    # Timestamps like HH:MM or HH:MM:SS -> strip before tokenizing
+    # Timestamps like HH:MM or HH:MM:SS -> strip before tokenizing in flexible path
     timestamp_re = re.compile(r"\b\d{1,2}:\d{2}(?::\d{2})?\b")
 
     # Populated if/when a header row is detected; maps canonical name -> column index
-    header_map: dict | None = None
+    header_map: "dict | None" = None
     skipped_rows = 0
 
     def _unwrap_if_single_quoted_field(parsed: List[str]) -> List[str]:
@@ -76,10 +118,15 @@ def parse_raw_csv(path: str, comment_prefixes=("#", "//")) -> Tuple[pd.DataFrame
                     pass
         return parsed
 
-    def _try_strict(fields: List[str]) -> Tuple[float, float, float, float] | None:
+    def _try_strict(fields: List[str]) -> "dict | None":
         if len(fields) >= 4:
             try:
-                return (float(fields[0]), float(fields[1]), float(fields[2]), float(fields[3]))
+                return {
+                    "time": float(fields[0]),
+                    "mx":   float(fields[1]),
+                    "my":   float(fields[2]),
+                    "mz":   float(fields[3]),
+                }
             except (ValueError, TypeError):
                 pass
         return None
@@ -130,19 +177,35 @@ def parse_raw_csv(path: str, comment_prefixes=("#", "//")) -> Tuple[pd.DataFrame
                 rows.append(result)
                 continue
 
+            # Key:value extraction (e.g. "13:26:05.144 -> X:-2131.35 Y:-3968.25 Z:-1349.39 Heading:241.76 Row:0")
+            kv = _extract_kv(line)
+            if {"mx", "my", "mz"}.issubset(kv):
+                abs_t = _wall_time_to_sec(line)
+                if abs_t is not None:
+                    if t0_abs is None:
+                        t0_abs = abs_t
+                    kv["time"] = abs_t - t0_abs
+                else:
+                    kv.setdefault("time", float(len(rows)))
+                rows.append(kv)
+                continue
+
             nums = _flexible_extract(parsed, line)
             if len(nums) >= 4:
-                rows.append((nums[0], nums[1], nums[2], nums[3]))
+                rows.append({"time": nums[0], "mx": nums[1], "my": nums[2], "mz": nums[3]})
             elif len(nums) == 3:
-                rows.append((float(len(rows)), nums[0], nums[1], nums[2]))
+                rows.append({"time": float(len(rows)), "mx": nums[0], "my": nums[1], "mz": nums[2]})
             else:
                 skipped_rows += 1
 
     if skipped_rows:
         logger.debug("skipped %d unparseable row(s) in %s", skipped_rows, path)
 
-    df = pd.DataFrame(rows, columns=["time", "mx", "my", "mz"])
+    df = pd.DataFrame(rows)
     if not df.empty:
+        for col in ("time", "mx", "my", "mz"):
+            if col not in df.columns:
+                df[col] = float("nan")
         df = df.sort_values("time").reset_index(drop=True)
 
     # Fallback: some CSVs use ISO timestamp strings with named columns
