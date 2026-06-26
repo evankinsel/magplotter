@@ -18,7 +18,8 @@ file contents.
 import csv
 import logging
 import re
-from typing import Tuple, List
+from types import MappingProxyType
+from typing import Mapping, Tuple, List
 
 import pandas as pd
 
@@ -83,15 +84,16 @@ def validate_sensor_df(df: pd.DataFrame) -> None:
 
 
 # Maps common column name variants to canonical names used by the rest of the pipeline.
-# Add more aliases here as new sensor formats are encountered.
-COLUMN_ALIASES = {
+# Wrapped in MappingProxyType so module-level mutation is caught at runtime rather than
+# silently altering alias resolution for all subsequent parse calls.
+COLUMN_ALIASES: Mapping[str, str] = MappingProxyType({
     "time": "time", "t": "time", "timestamp": "time", "sample": "time", "idx": "time",
     "mx": "mx", "x": "mx", "bx": "mx", "mag_x": "mx", "field_x": "mx", "x_nt": "mx",
     "my": "my", "y": "my", "by": "my", "mag_y": "my", "field_y": "my", "y_nt": "my",
     "mz": "mz", "z": "mz", "bz": "mz", "mag_z": "mz", "field_z": "mz", "z_nt": "mz",
     "heading": "heading", "hdg": "heading", "azimuth": "heading",
     "yaw": "heading", "compass": "heading", "bearing": "heading",
-}
+})
 
 # key:value pairs — key starts with a letter/underscore, value is a signed float/int
 _KV_RE = re.compile(r"\b([A-Za-z_]\w*):\s*([+-]?\d+(?:\.\d*)?(?:[eE][+-]?\d+)?)")

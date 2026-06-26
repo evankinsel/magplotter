@@ -1,29 +1,34 @@
 """
 Watchdog-based watcher: monitor the incoming directory and process new CSV files.
 
-ROOT CAUSE OF INTERMITTENT FAILURES (documented):
-  1. No startup scan -- watchdog only fires events for activity that happens AFTER
-     the observer starts.  Any CSV dropped while the watcher was not running is
-     silently ignored on re-launch.
-  2. Silent observer death -- on Linux the watchdog InotifyObserver can die if the
-     inotify watch-descriptor limit is hit, but observer.is_alive() returns False
-     rather than raising; the main loop never noticed.
-  3. No fallback -- if watchdog fails to initialize there was no second path to
-     detect files.
-  4. No deduplication -- a file found by the startup scan could also trigger a
-     watchdog event, causing double-processing.
+Design notes — how stability checking and deduplication work
+------------------------------------------------------------
+FileProcessor uses a per-path generation counter (_seq) instead of storing timer
+references.  When schedule() is called for a path that already has a pending timer,
+the generation is bumped; the old timer fires, sees a stale generation, and aborts
+without touching the file.  No explicit timer cancellation is required, which
+eliminates the race between timer creation (outside the lock) and timer storage
+(inside the lock) that existed in the previous _timers dict approach.
 
-FIX STRATEGY:
-  * Scan incoming/ on startup and process any pre-existing CSVs before starting
-    the observer, so files dropped while the watcher was off are never missed.
-  * Track processed paths in a set so the same file is never processed twice.
-  * Monitor observer.is_alive() in the main loop; restart it on failure.
-  * If watchdog raises on init or on schedule(), fall back to a pure polling loop
-    that scans the directory every POLL_INTERVAL_SECONDS.
-  * Comprehensive structured logging throughout.
+State held per FileProcessor instance:
+    _seq       – path → current generation int.  Presence means a stability check
+                 is pending.  Absence means the path is either idle or in-flight.
+    _in_flight – paths currently inside process_file().
+    _failed    – paths that raised SchemaValidationError; these are permanently
+                 broken inputs that should never be re-queued.
+
+stat() calls are always performed outside the lock.  The lock only protects the
+in-memory dicts and sets — never blocks on filesystem I/O.
+
+Observer/poll strategy:
+    1. Scan incoming/ at startup so files dropped while the watcher was off are caught.
+    2. watchdog observer for low-latency event detection.
+    3. If the observer dies or was never available, fall back to polling.
+    4. Restart the observer up to MAX_OBSERVER_RESTARTS times before switching
+       permanently to polling.
 
 Usage:
-  python -m sensor_lab.watcher /path/to/project_root
+    python -m sensor_lab.watcher /path/to/project_root
 """
 
 import logging
@@ -40,67 +45,123 @@ MAX_OBSERVER_RESTARTS = 3
 
 
 class FileProcessor:
+    """Thread-safe file stability checker and dispatcher.
+
+    Multiple threads (watchdog callbacks, poll cycle, timer threads) call schedule()
+    concurrently.  The generation counter makes races benign: whichever timer fires
+    last simply finds a stale generation and returns immediately.
+    """
+
     def __init__(self, base_dir: Path):
         self.base_dir = base_dir
         self._lock = Lock()
+        self._seq: dict = {}        # path -> current generation int
         self._in_flight: set = set()
-        self._timers: dict = {}
+        self._failed: set = set()   # paths with permanent schema failures
 
     def schedule(self, p: Path) -> None:
-        if not p.exists():
-            return
+        """Enqueue p for a file-size stability check.
+
+        Safe to call from any thread.  Re-schedules an already-pending path by
+        bumping its generation — the old timer becomes a no-op when it fires.
+        """
         with self._lock:
-            if p in self._timers:
-                self._timers[p].cancel()
-            size = p.stat().st_size
-        self._arm_timer(p, size)
-
-    def _arm_timer(self, p: Path, last_size: int) -> None:
-        def _check():
-            with self._lock:
-                self._timers.pop(p, None)
-                if not p.exists():
-                    logger.debug("file disappeared before stability check: %s", p)
-                    return
-                new_size = p.stat().st_size
-
-            if new_size != last_size:
-                logger.debug("file still growing, rescheduling stability check: %s", p.name)
-                self._arm_timer(p, new_size)
+            if p in self._failed:
+                logger.debug("skipping permanently-failed file: %s", p.name)
                 return
+            if p in self._in_flight:
+                logger.debug("file already in flight, deferring: %s", p.name)
+                return
+            gen = self._seq.get(p, 0) + 1
+            self._seq[p] = gen
+
+        # stat() outside the lock — no filesystem I/O under the mutex
+        try:
+            size = p.stat().st_size
+        except OSError:
+            with self._lock:
+                if self._seq.get(p) == gen:
+                    self._seq.pop(p, None)
+            return
+
+        self._arm_timer(p, size, gen)
+
+    def _arm_timer(self, p: Path, last_size: int, gen: int) -> None:
+        """Start a one-shot timer that checks size stability after STABILITY_SECONDS.
+
+        The closure captures gen.  On firing it compares gen against the current
+        _seq value; a mismatch means schedule() was called again and this timer
+        is stale — it returns immediately without touching _in_flight.
+        """
+        def _check() -> None:
+            # stat() outside the lock
+            try:
+                new_size = p.stat().st_size
+            except OSError:
+                new_size = None
 
             with self._lock:
-                if p in self._in_flight:
-                    logger.debug("skipping already-processing file: %s", p.name)
+                if self._seq.get(p) != gen:
+                    # A newer schedule() call superseded us — nothing to do
                     return
-                self._in_flight.add(p)
+                if new_size is None:
+                    logger.debug("file disappeared before stability check: %s", p)
+                    self._seq.pop(p, None)
+                    return
+                if new_size != last_size:
+                    # File is still growing — bump generation and reschedule
+                    next_gen = gen + 1
+                    self._seq[p] = next_gen
+                    next_size = new_size
+                    claim = False
+                else:
+                    # Stable — claim the file for processing
+                    self._seq.pop(p, None)
+                    self._in_flight.add(p)
+                    next_gen = None
+                    next_size = None
+                    claim = True
 
-            self._process(p)
+            if not claim:
+                logger.debug(
+                    "file still growing (%d → %d bytes), rescheduling: %s",
+                    last_size, next_size, p.name,
+                )
+                self._arm_timer(p, next_size, next_gen)
+            else:
+                self._process(p)
 
         t = Timer(STABILITY_SECONDS, _check)
-        with self._lock:
-            self._timers[p] = t
+        t.daemon = True
         t.start()
 
     def _process(self, p: Path) -> None:
         from .processor import process_file
+        from .clean import SchemaValidationError
         logger.info("processing started: %s", p.name)
         try:
             process_file(str(p), base_dir=str(self.base_dir))
             logger.info("processing complete: %s", p.name)
+        except SchemaValidationError as exc:
+            logger.error(
+                "permanent schema failure for %s — will not retry: %s",
+                p.name, exc,
+            )
+            with self._lock:
+                self._failed.add(p)
         except Exception:
-            logger.exception("error processing %s", p.name)
+            logger.exception("error processing %s — may retry on next event", p.name)
         finally:
             with self._lock:
                 self._in_flight.discard(p)
 
     def scan_existing(self, incoming: Path) -> None:
-        """Process any CSV files already present in incoming/ at startup."""
+        """Queue any CSV files already present in incoming/ at startup."""
         logger.info("scanning for pre-existing CSV files in: %s", incoming)
         found = 0
         for p in sorted(incoming.iterdir()):
             if p.is_file() and p.suffix.lower() == ".csv":
-                logger.info("found existing CSV, queuing for processing: %s", p.name)
+                logger.info("found existing CSV, queuing: %s", p.name)
                 self.schedule(p)
                 found += 1
         if found == 0:
@@ -155,7 +216,8 @@ def _run_with_watchdog_and_fallback(processor: FileProcessor, incoming: Path) ->
     while True:
         if restarts >= MAX_OBSERVER_RESTARTS:
             logger.warning(
-                "watchdog observer failed %d times — switching permanently to polling fallback (interval=%ss)",
+                "watchdog observer failed %d times — switching permanently to polling "
+                "(interval=%.1fs)",
                 restarts, POLL_INTERVAL_SECONDS,
             )
             _run_poll_fallback(processor, incoming)
@@ -164,8 +226,10 @@ def _run_with_watchdog_and_fallback(processor: FileProcessor, incoming: Path) ->
         observer = _try_start_observer(processor, incoming)
         if observer is None:
             restarts += 1
-            logger.warning("observer failed to start (attempt %d/%d) — falling back to polling for now",
-                           restarts, MAX_OBSERVER_RESTARTS)
+            logger.warning(
+                "observer failed to start (attempt %d/%d) — polling this cycle",
+                restarts, MAX_OBSERVER_RESTARTS,
+            )
             _run_poll_cycle(processor, incoming)
             continue
 
@@ -175,8 +239,9 @@ def _run_with_watchdog_and_fallback(processor: FileProcessor, incoming: Path) ->
                 time.sleep(1.0)
                 if not observer.is_alive():
                     logger.error(
-                        "watchdog observer thread died unexpectedly — this can happen when the inotify "
-                        "watch-descriptor limit is exceeded (/proc/sys/fs/inotify/max_user_watches). Restarting."
+                        "watchdog observer thread died unexpectedly — this can happen "
+                        "when the inotify watch-descriptor limit is exceeded "
+                        "(/proc/sys/fs/inotify/max_user_watches). Restarting."
                     )
                     restarts += 1
                     break
@@ -206,7 +271,7 @@ def _try_start_observer(processor: FileProcessor, incoming: Path):
         logger.info("watchdog observer started successfully, watching: %s", incoming)
         return observer
     except ImportError:
-        logger.warning("watchdog package not available — falling back to polling-only mode")
+        logger.warning("watchdog package not available — polling-only mode")
         return None
     except Exception:
         logger.exception("failed to start watchdog observer")
@@ -214,7 +279,10 @@ def _try_start_observer(processor: FileProcessor, incoming: Path):
 
 
 def _run_poll_fallback(processor: FileProcessor, incoming: Path) -> None:
-    logger.info("polling fallback active — scanning %s every %.1fs", incoming, POLL_INTERVAL_SECONDS)
+    logger.info(
+        "polling fallback active — scanning %s every %.1fs",
+        incoming, POLL_INTERVAL_SECONDS,
+    )
     try:
         while True:
             _run_poll_cycle(processor, incoming)
@@ -230,8 +298,12 @@ def _run_poll_cycle(processor: FileProcessor, incoming: Path) -> None:
     for p in sorted(incoming.iterdir()):
         if p.is_file() and p.suffix.lower() == ".csv":
             with processor._lock:
-                already = p in processor._in_flight or p in processor._timers
-            if not already:
+                pending = (
+                    p in processor._seq
+                    or p in processor._in_flight
+                    or p in processor._failed
+                )
+            if not pending:
                 logger.debug("poll scan found new CSV: %s", p.name)
                 processor.schedule(p)
 
