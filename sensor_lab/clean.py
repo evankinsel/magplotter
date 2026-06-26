@@ -8,6 +8,7 @@ key:value pair formats (e.g. "13:26:05.144 -> X:-12.3 Y:4.5 Z:-6.7 Heading:120.0
 
 Functions:
     parse_raw_csv(path, comment_prefixes=("#","//")) -> (DataFrame, header_comments)
+    validate_sensor_df(df) -> None   raises SchemaValidationError on invalid schema
 
 Security note: this module performs defensive parsing and treats all
 input as untrusted. It only converts recognised fields to floats and
@@ -22,6 +23,64 @@ from typing import Tuple, List
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+
+class SchemaValidationError(ValueError):
+    """Raised when a parsed DataFrame is missing required sensor columns or has invalid types."""
+
+
+# All four columns are required after ingestion. time is always synthesised by the
+# parser (row index if not present in the source), so its absence here means the
+# file yielded zero parseable rows.
+REQUIRED_SENSOR_COLUMNS = frozenset({"time", "mx", "my", "mz"})
+
+
+def validate_sensor_df(df: pd.DataFrame) -> None:
+    """
+    Validate that df satisfies the sensor schema contract.
+
+    Raises SchemaValidationError on any of:
+    - DataFrame is completely empty (no rows and no columns)
+    - One or more of time / mx / my / mz is absent
+    - A required column is non-numeric
+    - A required column is entirely NaN
+    - No row has complete (non-NaN) values across all required columns
+    """
+    if df.empty and len(df.columns) == 0:
+        raise SchemaValidationError(
+            "No sensor data was parsed — the DataFrame has no rows or columns. "
+            "Verify the CSV contains numeric magnetometer readings (mx/my/mz or equivalent)."
+        )
+
+    missing = REQUIRED_SENSOR_COLUMNS - set(df.columns)
+    if missing:
+        raise SchemaValidationError(
+            f"Required sensor column(s) missing after ingestion: {sorted(missing)}. "
+            f"Columns present: {sorted(df.columns.tolist())}. "
+            "Expected columns: time, mx (Bx), my (By), mz (Bz)."
+        )
+
+    for col in REQUIRED_SENSOR_COLUMNS:
+        if not pd.api.types.is_numeric_dtype(df[col]):
+            sample = df[col].dropna().head(3).tolist()
+            raise SchemaValidationError(
+                f"Column '{col}' must be numeric but contains non-numeric values: {sample}. "
+                "Ensure all sensor columns are floating-point values."
+            )
+        if df[col].isna().all():
+            raise SchemaValidationError(
+                f"Column '{col}' is entirely NaN — no valid sensor readings found. "
+                "Check the input CSV for corrupt or missing data in this column."
+            )
+
+    complete_rows = df[sorted(REQUIRED_SENSOR_COLUMNS)].dropna().shape[0]
+    if complete_rows == 0:
+        raise SchemaValidationError(
+            "No rows with complete sensor readings found. "
+            "Every row has at least one NaN across time/mx/my/mz after parsing. "
+            "Check the input CSV for structural issues."
+        )
+
 
 # Maps common column name variants to canonical names used by the rest of the pipeline.
 # Add more aliases here as new sensor formats are encountered.
@@ -247,9 +306,7 @@ def parse_raw_csv(path: str, comment_prefixes=("#", "//")) -> Tuple[pd.DataFrame
                 except Exception:
                     logger.exception("ISO timestamp fallback failed for %s", path)
 
-    if df.empty:
-        logger.warning("no data rows extracted from %s", path)
-    else:
-        logger.info("extracted %d rows from %s", len(df), path)
-
+    # Strict schema gate — raises SchemaValidationError on missing/bad columns.
+    validate_sensor_df(df)
+    logger.info("extracted %d rows from %s", len(df), path)
     return df, header_comments

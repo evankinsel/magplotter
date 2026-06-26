@@ -1,19 +1,16 @@
 """
-Compute physics-based metrics for a magnetometer run.
-Includes axis stats, |B| metrics, heading (circular stats), noise metric.
+Analysis stage: compute physics-based metrics from transformed sensor data.
 
-Primary functions:
+Pure functions — no file I/O, no side effects.
+Expects df to have been produced by transform_sensor_data (columns: time, mx, my, mz,
+magnitude, heading_deg).  Falls back to inline computation when derived columns are absent
+so the functions remain usable in isolation.
+
+Functions:
     compute_all_metrics(df) -> dict
     axis_stats(df) -> dict
     magnitude_metrics(df) -> dict
     heading_metrics(df) -> dict
-
-Notes: functions expect a `pandas.DataFrame` with numeric columns `time, mx, my, mz`.
-If the DataFrame is empty, functions return sensible `None`-filled placeholders.
-
-Security note: this module performs numerical computations only and
-does not touch external resources. Ensure upstream parsing has validated
-and sanitized input data types.
 """
 import logging
 from typing import Dict, Any
@@ -44,7 +41,9 @@ def axis_stats(df: pd.DataFrame) -> Dict[str, Dict[str, float]]:
 def magnitude_metrics(df: pd.DataFrame) -> Dict[str, float]:
     if df.empty:
         return {"B_mean": None, "B_std": None, "B_drift": None}
-    B = np.sqrt(df["mx"] ** 2 + df["my"] ** 2 + df["mz"] ** 2)
+    B = df["magnitude"] if "magnitude" in df.columns else np.sqrt(
+        df["mx"].astype(float) ** 2 + df["my"].astype(float) ** 2 + df["mz"].astype(float) ** 2
+    )
     return {
         "B_mean": float(B.mean()),
         "B_std": float(B.std(ddof=0)),
@@ -53,7 +52,6 @@ def magnitude_metrics(df: pd.DataFrame) -> Dict[str, float]:
 
 
 def circular_mean_deg(angles_deg: np.ndarray) -> float:
-    # convert degrees to radians, compute atan2(mean_sin, mean_cos)
     ang = np.deg2rad(angles_deg)
     mean_sin = np.mean(np.sin(ang))
     mean_cos = np.mean(np.cos(ang))
@@ -62,13 +60,13 @@ def circular_mean_deg(angles_deg: np.ndarray) -> float:
 
 
 def circular_std_deg(angles_deg: np.ndarray) -> float:
-    # circular standard deviation (radians) = sqrt(-2 * ln(R)), where R = sqrt(mean_cos^2 + mean_sin^2)
+    # circular std (rad) = sqrt(-2 * ln(R)), R = mean resultant length
     ang = np.deg2rad(angles_deg)
     mean_sin = np.mean(np.sin(ang))
     mean_cos = np.mean(np.cos(ang))
     R = np.hypot(mean_cos, mean_sin)
     if R <= 0:
-        return float(180.0)  # maximal uncertainty fallback
+        return float(180.0)
     circ_std_rad = np.sqrt(-2.0 * np.log(np.clip(R, 1e-12, 1.0)))
     return float(np.rad2deg(circ_std_rad))
 
@@ -76,7 +74,9 @@ def circular_std_deg(angles_deg: np.ndarray) -> float:
 def heading_metrics(df: pd.DataFrame) -> Dict[str, float]:
     if df.empty:
         return {"heading_mean_deg": None, "heading_std_deg": None}
-    headings = np.rad2deg(np.arctan2(df["my"].astype(float), df["mx"].astype(float))) % 360
+    headings = df["heading_deg"].to_numpy() if "heading_deg" in df.columns else (
+        np.rad2deg(np.arctan2(df["my"].astype(float), df["mx"].astype(float))) % 360
+    )
     mean_h = circular_mean_deg(headings)
     std_h = circular_std_deg(headings)
     return {"heading_mean_deg": mean_h, "heading_std_deg": std_h}
@@ -101,6 +101,8 @@ def compute_all_metrics(df: pd.DataFrame) -> Dict[str, Any]:
         metrics["time_span_s"] = float(df["time"].iloc[-1] - df["time"].iloc[0]) if len(df) >= 2 else 0.0
     else:
         metrics["time_span_s"] = None
-    logger.debug("metrics computed: num_samples=%d, B_mean=%s, time_span_s=%s",
-                 metrics["num_samples"], metrics.get("B_mean"), metrics.get("time_span_s"))
+    logger.debug(
+        "metrics computed: num_samples=%d, B_mean=%s, time_span_s=%s",
+        metrics["num_samples"], metrics.get("B_mean"), metrics.get("time_span_s"),
+    )
     return metrics

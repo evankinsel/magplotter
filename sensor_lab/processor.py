@@ -1,54 +1,56 @@
 """
-Top-level processing orchestration: takes a CSV path, runs cleaning, metrics, plotting,
-saves JSON summary, and moves the raw CSV to processed directory.
+Pipeline orchestrator: executes the five-stage sensor processing pipeline and handles
+all file I/O (reading, writing, archiving).
+
+Pipeline stages (each a pure function — no embedded file I/O):
+    1. Ingestion / Cleaning  — parse_raw_csv         (sensor_lab.clean)
+    2. Transformation        — transform_sensor_data  (sensor_lab.transform)
+    3. Analysis              — compute_all_metrics    (sensor_lab.analysis)
+    4. Visualisation         — render_magnitude /
+                               render_axes /
+                               render_heading         (sensor_lab.viz)
+
+All I/O (saving figures, writing JSON/CSV, archiving the raw file) is consolidated
+in process_file().  Stages are called in sequence and their outputs passed explicitly
+between them.  A SchemaValidationError from the ingestion boundary propagates to the
+caller unchanged; all other stage failures are caught and logged so that processing
+of the next file can continue.
 
 Public API:
-    process_file(csv_path, base_dir=..., incoming_dir_name=..., processed_dir_name=..., output_dir_name=...)
-
-This module coordinates the pipeline steps (parse -> analyze -> plot -> save).
-It attempts to be robust: non-fatal failures in optional outputs (Parquet,
-plots) are ignored so processing of other runs continues.
-
-Security note: input files are treated as untrusted data. The processor
-reads numeric fields only and never executes content from input CSVs.
+    process_file(csv_path, base_dir, incoming_dir_name, processed_dir_name, output_dir_name)
 """
+import importlib
 import json
 import logging
-import importlib
+import shutil
 import time
 from pathlib import Path
-import shutil
 from typing import Optional
 
-from .clean import parse_raw_csv
-from .analysis import compute_all_metrics
-from .viz import plot_magnitude, plot_axes, plot_heading
+import matplotlib.pyplot as plt
 
-# Field mapping is an optional subsystem — import at module level so the
-# ImportError surfaces clearly during development rather than silently at runtime.
+from .clean import parse_raw_csv
+from .transform import transform_sensor_data
+from .analysis import compute_all_metrics
+from .viz import render_magnitude, render_axes, render_heading
+
 try:
     from src.field_mapping import run_field_mapping, load_config as _load_fm_config
     _FIELD_MAPPING_AVAILABLE = True
 except Exception as _fm_import_err:
     _FIELD_MAPPING_AVAILABLE = False
-    import logging as _logging
-    _logging.getLogger(__name__).warning(
+    logging.getLogger(__name__).warning(
         "field mapping subsystem unavailable: %s", _fm_import_err
     )
 
 logger = logging.getLogger(__name__)
 
-# Import report generator from the new src package if available. Provide a no-op fallback.
 try:
     report_mod = importlib.import_module("src.report_generator")
     generate_report = report_mod.generate_report
 except Exception:
-    try:
-        report_mod = importlib.import_module("..src.report_generator", package=__package__)
-        generate_report = report_mod.generate_report
-    except Exception:
-        def generate_report(summary, run_out_dir):
-            return None
+    def generate_report(summary, run_out_dir):
+        return None
 
 
 def load_run_notes(csv_path: Path) -> Optional[str]:
@@ -66,6 +68,16 @@ def load_run_notes(csv_path: Path) -> Optional[str]:
     return None
 
 
+def _save_figure(fig: plt.Figure, path: Path, label: str) -> None:
+    try:
+        fig.savefig(str(path))
+        logger.info("%s saved: %s", label, path)
+    except Exception:
+        logger.warning("%s save failed: %s", label, path)
+    finally:
+        plt.close(fig)
+
+
 def process_file(
     csv_path: str,
     base_dir: str = ".",
@@ -73,6 +85,18 @@ def process_file(
     processed_dir_name: str = "processed",
     output_dir_name: str = "output",
 ) -> dict:
+    """
+    Run the full pipeline for one CSV file.
+
+    Stage execution order:
+        1. Ingest + Clean  — parse_raw_csv (raises SchemaValidationError on bad input)
+        2. Transform       — transform_sensor_data
+        3. Analyze         — compute_all_metrics
+        4. Visualize       — render_magnitude / render_axes / render_heading
+        5. I/O             — save figures, JSON summary, report, processing log; archive raw CSV
+
+    Returns the summary dict written to summary.json.
+    """
     csv_path = Path(csv_path)
     base = Path(base_dir)
     processed_dir = base / processed_dir_name
@@ -81,18 +105,37 @@ def process_file(
     output_runs_dir.mkdir(parents=True, exist_ok=True)
 
     run_name = csv_path.stem
-    logger.info("starting pipeline — run: %s, source: %s", run_name, csv_path)
+    logger.info("pipeline starting — run: %s, source: %s", run_name, csv_path)
     t_start = time.monotonic()
 
-    # Parse
-    logger.info("parsing CSV: %s", csv_path.name)
+    # ── Stage 1: Ingestion + Cleaning ─────────────────────────────────────────
+    # SchemaValidationError propagates to caller; bad inputs are rejected here.
+    logger.info("stage 1 [ingest+clean]: %s", csv_path.name)
     df, header_comments = parse_raw_csv(str(csv_path))
-    logger.info("parsed %d rows from %s", len(df), csv_path.name)
+    logger.info("stage 1 complete: %d rows", len(df))
 
-    # Analyze
-    logger.info("computing metrics — run: %s", run_name)
+    # ── Stage 2: Transformation ───────────────────────────────────────────────
+    logger.info("stage 2 [transform]: run=%s", run_name)
+    df = transform_sensor_data(df)
+    logger.debug("stage 2 complete: columns=%s", sorted(df.columns.tolist()))
+
+    # ── Stage 3: Analysis ─────────────────────────────────────────────────────
+    logger.info("stage 3 [analyze]: run=%s", run_name)
     metrics = compute_all_metrics(df)
-    logger.debug("metrics: samples=%d, B_mean=%s", metrics.get("num_samples"), metrics.get("B_mean"))
+    logger.debug("stage 3 complete: B_mean=%s, samples=%s", metrics.get("B_mean"), metrics.get("num_samples"))
+
+    # ── Stage 4: Visualisation ────────────────────────────────────────────────
+    logger.info("stage 4 [visualize]: run=%s", run_name)
+    figures = {
+        "field_strength_plot.png": render_magnitude(df),
+        "heading_plot.png": render_heading(df),
+        "axes_plot.png": render_axes(df),
+    }
+    logger.debug("stage 4 complete: %d figures rendered", len(figures))
+
+    # ── Stage 5: I/O ─────────────────────────────────────────────────────────
+    run_out_dir = output_runs_dir / csv_path.stem
+    run_out_dir.mkdir(parents=True, exist_ok=True)
 
     notes_txt = load_run_notes(csv_path)
     summary = {
@@ -103,54 +146,29 @@ def process_file(
         "header_comments": header_comments,
     }
 
-    # Prepare output directory per run
-    run_out_dir = output_runs_dir / csv_path.stem
-    run_out_dir.mkdir(parents=True, exist_ok=True)
-    logger.debug("output directory: %s", run_out_dir)
-
-    # Save a copy of the raw CSV for provenance
+    # Archive raw CSV
     try:
-        raw_copy = run_out_dir / "raw_data.csv"
-        shutil.copy(str(csv_path), str(raw_copy))
-        logger.debug("raw CSV archived to: %s", raw_copy)
+        shutil.copy(str(csv_path), str(run_out_dir / "raw_data.csv"))
     except Exception:
         logger.warning("could not archive raw CSV for run: %s", run_name)
-        raw_copy = None
 
-    # Save cleaned CSV
-    cleaned_csv_path = run_out_dir / "cleaned_data.csv"
+    # Save cleaned + transformed CSV
     try:
-        df.to_csv(cleaned_csv_path, index=False)
-        logger.debug("cleaned CSV saved: %s", cleaned_csv_path)
+        df.to_csv(run_out_dir / "cleaned_data.csv", index=False)
     except Exception:
         logger.warning("could not save cleaned CSV for run: %s", run_name)
 
-    # Save Parquet
-    cleaned_parquet = None
+    # Save Parquet (optional — silently skipped when pyarrow is absent)
     try:
-        cleaned_parquet = run_out_dir / "cleaned_data.parquet"
-        df.to_parquet(cleaned_parquet, index=False)
-        logger.debug("Parquet saved: %s", cleaned_parquet)
+        df.to_parquet(run_out_dir / "cleaned_data.parquet", index=False)
     except Exception:
-        logger.debug("Parquet save skipped (pyarrow unavailable?) for run: %s", run_name)
-        cleaned_parquet = None
+        logger.debug("Parquet save skipped for run: %s", run_name)
 
-    # Plots
-    logger.info("generating plots — run: %s", run_name)
-    try:
-        plot_magnitude(df, str(run_out_dir / "field_strength_plot.png"))
-    except Exception:
-        logger.warning("field_strength plot failed for run: %s", run_name)
-    try:
-        plot_heading(df, str(run_out_dir / "heading_plot.png"))
-    except Exception:
-        logger.warning("heading plot failed for run: %s", run_name)
-    try:
-        plot_axes(df, str(run_out_dir / "axes_plot.png"))
-    except Exception:
-        logger.warning("axes plot failed for run: %s", run_name)
+    # Save figures
+    for filename, fig in figures.items():
+        _save_figure(fig, run_out_dir / filename, filename)
 
-    # Field mapping (runs only when spatial coordinate columns are detected)
+    # Field mapping (optional subsystem — skipped when spatial columns absent)
     if _FIELD_MAPPING_AVAILABLE:
         logger.info("field mapping: attempting for run: %s", run_name)
         try:
@@ -168,7 +186,7 @@ def process_file(
                     len(fm_result.get("generated_files", [])),
                 )
             else:
-                logger.debug("field mapping: no spatial data detected — skipped for run: %s", run_name)
+                logger.debug("field mapping: no spatial data — skipped for run: %s", run_name)
         except Exception:
             logger.warning("field mapping failed for run: %s", run_name, exc_info=True)
 
@@ -176,7 +194,6 @@ def process_file(
     summary_path = run_out_dir / "summary.json"
     with open(summary_path, "w", encoding="utf-8") as fh:
         json.dump(summary, fh, indent=2, ensure_ascii=False)
-    logger.debug("summary JSON saved: %s", summary_path)
 
     # Report
     try:
@@ -186,25 +203,23 @@ def process_file(
 
     # Processing log
     try:
-        log_path = run_out_dir / "processing_log.txt"
-        with open(log_path, "w", encoding="utf-8") as logf:
+        with open(run_out_dir / "processing_log.txt", "w", encoding="utf-8") as logf:
             logf.write("Processed by sensor_lab.processor\n")
             logf.write(f"source: {csv_path}\n")
-            logf.write(f"cleaned_csv: {cleaned_csv_path}\n")
             logf.write(f"summary: {summary_path}\n")
     except Exception:
         logger.warning("could not write processing_log.txt for run: %s", run_name)
 
     # Move raw CSV to processed
     try:
-        dst = processed_dir / csv_path.name
-        shutil.move(str(csv_path), str(dst))
-        logger.info("archived to processed: %s -> %s", csv_path.name, dst)
+        shutil.move(str(csv_path), str(processed_dir / csv_path.name))
+        logger.info("archived: %s -> %s/", csv_path.name, processed_dir)
     except Exception:
-        logger.warning("could not move %s to processed directory", csv_path.name)
+        logger.warning("could not move %s to processed/", csv_path.name)
 
     duration = time.monotonic() - t_start
-    logger.info("pipeline complete — run: %s, duration: %.2fs, output: %s",
-                run_name, duration, run_out_dir)
-
+    logger.info(
+        "pipeline complete — run: %s, duration: %.2fs, output: %s",
+        run_name, duration, run_out_dir,
+    )
     return summary
