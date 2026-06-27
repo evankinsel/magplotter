@@ -82,11 +82,12 @@ def load_config(base_dir: Optional[Path] = None) -> Dict[str, Any]:
         return _DEFAULT_CONFIG
 
 
-def _read_spatial_csv(csv_path: str) -> Optional[pd.DataFrame]:
+def read_spatial_csv(csv_path: str) -> Optional[pd.DataFrame]:
     """
     Read a CSV preserving all columns (no column aliasing / row filtering).
     Comment lines starting with '#' or '//' are stripped before parsing.
-    Returns None on any read error.
+    All columns are coerced to numeric; non-numeric values become NaN.
+    Returns None on any read error or when the file yields no data.
     """
     try:
         lines: List[str] = []
@@ -102,36 +103,33 @@ def _read_spatial_csv(csv_path: str) -> Optional[pd.DataFrame]:
         if df.empty:
             return None
 
-        # Coerce all columns to numeric; non-numeric → NaN
-        for col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-
-        return df
+        return df.apply(pd.to_numeric, errors="coerce")
     except Exception as exc:
         logger.warning("field_mapping: could not read %s — %s", csv_path, exc)
         return None
 
 
 def run_field_mapping(
-    csv_path: str,
+    df: pd.DataFrame,
     output_dir: Path,
     base_dir: Optional[Path] = None,
     config: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     """
-    Execute the complete field mapping pipeline for one CSV file.
+    Execute the complete field mapping pipeline from a pre-read DataFrame.
 
     Parameters
     ----------
-    csv_path   : path to the raw CSV (read independently from the time-series parser)
-    output_dir : run output directory (e.g. output/runs/<run_name>/)
-    base_dir   : project root, used to locate config/config.yaml
+    df         : DataFrame with all CSV columns preserved (read by the caller —
+                 typically processor.py via read_spatial_csv)
+    output_dir : run output directory (e.g. output/runs/<run_id>/)
+    base_dir   : project root, used to locate config/config.yaml when config is None
     config     : pre-loaded config dict; if None, config.yaml is loaded automatically
 
     Returns a result dict (schema info, metrics, generated file list) on success,
     or None if the dataset has no spatial coordinate data or mapping is disabled.
     """
-    logger.info("field_mapping: starting — source: %s", csv_path)
+    logger.info("field_mapping: starting pipeline")
 
     if config is None:
         config = load_config(base_dir)
@@ -141,13 +139,7 @@ def run_field_mapping(
         logger.info("field_mapping: disabled in config — skipping")
         return None
 
-    # 1. Read raw CSV
-    df = _read_spatial_csv(csv_path)
-    if df is None:
-        logger.debug("field_mapping: could not read CSV — skipping")
-        return None
-
-    # 2. Coordinate detection
+    # 1. Coordinate detection
     schema = detect_coordinates(df)
     if schema is None:
         return None   # warning already logged by detector

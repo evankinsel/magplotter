@@ -29,14 +29,6 @@ from src.file_manager import list_csv_files, ensure_dirs
 logger = logging.getLogger(__name__)
 
 
-def _print_header():
-    print("=================================")
-    print("MagPlotter")
-    print("Magnetometer Data Processing Tool")
-    print("=================================")
-    print()
-
-
 def process_csvs_once(base: Path):
     """Scan incoming/ and process all CSVs once."""
     incoming = base / "incoming"
@@ -50,36 +42,24 @@ def process_csvs_once(base: Path):
     n = len(csvs)
     logger.info("found %d CSV file(s)", n)
 
-    print()
-    print(f"Found {n} CSV file{'' if n==1 else 's'}.")
     if n == 0:
-        print("Nothing to do. Place CSV files into the incoming/ folder and re-run.")
+        logger.info("no CSV files in incoming/ — nothing to do")
         return 0
 
-    print()
-    print("Processing:")
     failures = []
     for p in csvs:
         try:
             process_file(str(p), base_dir=str(base), output_dir_name="output")
-            print(f"✓ {p.name}")
+            logger.info("processed: %s", p.name)
         except Exception as e:
             logger.exception("failed to process %s", p.name)
-            print(f"✗ {p.name}  ({e})")
             failures.append((p.name, str(e)))
 
-    print()
-    print("Processing complete.")
-    print()
-    print("Results saved to:")
-    print(output)
     logger.info("batch processing complete — results in %s", output)
 
     if failures:
-        print()
-        print("Some files failed to process:")
         for name, err in failures:
-            print(f"- {name}: {err}")
+            logger.error("failed: %s — %s", name, err)
 
     return 0
 
@@ -88,8 +68,8 @@ def main(project_root: str = ".", watch: bool = False):
     base = Path(project_root).resolve()
     setup_logging(log_dir=base / "logs")
 
-    _print_header()
-    logger.info("MagPlotter starting — root: %s, watch=%s", base, watch)
+    logger.info("MagPlotter — Magnetometer Data Processing Tool")
+    logger.info("starting — root: %s, watch=%s", base, watch)
 
     if watch:
         run_watcher(str(base))

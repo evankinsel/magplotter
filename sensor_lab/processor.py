@@ -24,6 +24,7 @@ import json
 import logging
 import shutil
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -35,7 +36,11 @@ from .analysis import compute_all_metrics
 from .viz import render_magnitude, render_axes, render_heading
 
 try:
-    from src.field_mapping import run_field_mapping, load_config as _load_fm_config
+    from src.field_mapping import (
+        run_field_mapping,
+        load_config as _load_fm_config,
+        read_spatial_csv as _read_fm_csv,
+    )
     _FIELD_MAPPING_AVAILABLE = True
 except Exception as _fm_import_err:
     _FIELD_MAPPING_AVAILABLE = False
@@ -105,7 +110,9 @@ def process_file(
     output_runs_dir.mkdir(parents=True, exist_ok=True)
 
     run_name = csv_path.stem
-    logger.info("pipeline starting — run: %s, source: %s", run_name, csv_path)
+    run_ts = datetime.now().strftime("%Y%m%dT%H%M%S")
+    run_id = f"{run_name}_{run_ts}"
+    logger.info("pipeline starting — run_id: %s, source: %s", run_id, csv_path)
     t_start = time.monotonic()
 
     # ── Stage 1: Ingestion + Cleaning ─────────────────────────────────────────
@@ -134,12 +141,14 @@ def process_file(
     logger.debug("stage 4 complete: %d figures rendered", len(figures))
 
     # ── Stage 5: I/O ─────────────────────────────────────────────────────────
-    run_out_dir = output_runs_dir / csv_path.stem
+    run_out_dir = output_runs_dir / run_id
     run_out_dir.mkdir(parents=True, exist_ok=True)
 
     notes_txt = load_run_notes(csv_path)
     summary = {
         "run_name": csv_path.name,
+        "run_id": run_id,
+        "run_timestamp": run_ts,
         "path": str(csv_path),
         "metrics": metrics,
         "notes_from_file": notes_txt,
@@ -173,20 +182,25 @@ def process_file(
         logger.info("field mapping: attempting for run: %s", run_name)
         try:
             fm_config = _load_fm_config(base_dir=base)
-            fm_result = run_field_mapping(
-                str(csv_path),
-                output_dir=run_out_dir,
-                base_dir=base,
-                config=fm_config,
-            )
-            if fm_result is not None:
-                summary["field_mapping"] = fm_result
-                logger.info(
-                    "field mapping: complete — %d file(s) generated",
-                    len(fm_result.get("generated_files", [])),
+            # Read the spatial CSV here (all columns preserved) so run_field_mapping
+            # receives a DataFrame — file I/O stays in the orchestrator.
+            fm_df = _read_fm_csv(str(csv_path))
+            if fm_df is not None:
+                fm_result = run_field_mapping(
+                    fm_df,
+                    output_dir=run_out_dir,
+                    config=fm_config,
                 )
+                if fm_result is not None:
+                    summary["field_mapping"] = fm_result
+                    logger.info(
+                        "field mapping: complete — %d file(s) generated",
+                        len(fm_result.get("generated_files", [])),
+                    )
+                else:
+                    logger.debug("field mapping: no spatial data — skipped for run: %s", run_name)
             else:
-                logger.debug("field mapping: no spatial data — skipped for run: %s", run_name)
+                logger.debug("field mapping: could not read spatial CSV — skipped for run: %s", run_name)
         except Exception:
             logger.warning("field mapping failed for run: %s", run_name, exc_info=True)
 
@@ -219,7 +233,7 @@ def process_file(
 
     duration = time.monotonic() - t_start
     logger.info(
-        "pipeline complete — run: %s, duration: %.2fs, output: %s",
-        run_name, duration, run_out_dir,
+        "pipeline complete — run_id: %s, duration: %.2fs, output: %s",
+        run_id, duration, run_out_dir,
     )
     return summary
