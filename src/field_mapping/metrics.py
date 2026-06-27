@@ -74,23 +74,47 @@ def _weighted_centroid(grid: GridResult) -> Tuple[Optional[float], Optional[floa
 def _radial_profile(
     grid: GridResult, cx: float, cy: float, n_bins: int = 20
 ) -> List[Dict[str, Any]]:
-    """Mean |B| binned by distance from the magnetic center."""
-    R = np.sqrt((grid.XX - cx)**2 + (grid.YY - cy)**2)
-    r_max = np.nanmax(R[np.isfinite(grid.Bi)])
+    """Mean |B| binned by distance from the magnetic center.
+
+    Uses np.digitize + np.bincount to assign all cells to bins in one pass
+    instead of iterating over each bin with a boolean mask.
+    """
+    R = np.sqrt((grid.XX - cx) ** 2 + (grid.YY - cy) ** 2)
+    valid = np.isfinite(grid.Bi)
+    if not valid.any():
+        return []
+    r_max = float(R[valid].max())
     if r_max == 0:
         return []
+
     bins = np.linspace(0, r_max, n_bins + 1)
-    profile = []
-    for i in range(n_bins):
-        mask = (R >= bins[i]) & (R < bins[i + 1]) & np.isfinite(grid.Bi)
-        if mask.any():
-            profile.append({
-                "r_center": round(float((bins[i] + bins[i + 1]) / 2), 4),
-                "B_mean": round(float(grid.Bi[mask].mean()), 4),
-                "B_std": round(float(grid.Bi[mask].std()), 4),
-                "n_cells": int(mask.sum()),
-            })
-    return profile
+    bin_centers = 0.5 * (bins[:-1] + bins[1:])
+
+    R_valid = R.ravel()[valid.ravel()]
+    B_valid = grid.Bi.ravel()[valid.ravel()]
+
+    # np.digitize returns 1-based indices; clip so the upper-edge lands in the last bin
+    bin_idx = np.clip(np.digitize(R_valid, bins) - 1, 0, n_bins - 1)
+
+    counts = np.bincount(bin_idx, minlength=n_bins)
+    B_sums = np.bincount(bin_idx, weights=B_valid, minlength=n_bins)
+    B_sq_sums = np.bincount(bin_idx, weights=B_valid ** 2, minlength=n_bins)
+
+    populated = counts > 0
+    means = np.where(populated, B_sums / np.where(populated, counts, 1), 0.0)
+    variances = np.where(populated, B_sq_sums / np.where(populated, counts, 1) - means ** 2, 0.0)
+    stds = np.sqrt(np.maximum(variances, 0.0))
+
+    return [
+        {
+            "r_center": round(float(bin_centers[i]), 4),
+            "B_mean": round(float(means[i]), 4),
+            "B_std": round(float(stds[i]), 4),
+            "n_cells": int(counts[i]),
+        }
+        for i in range(n_bins)
+        if populated[i]
+    ]
 
 
 def _symmetry_score(grid: GridResult, cx: float, cy: float) -> Optional[float]:

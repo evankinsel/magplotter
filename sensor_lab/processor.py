@@ -34,6 +34,7 @@ from .clean import parse_raw_csv
 from .transform import transform_sensor_data
 from .analysis import compute_all_metrics
 from .viz import render_magnitude, render_axes, render_heading
+from src.version import MAGPLOTTER_VERSION
 
 try:
     from src.field_mapping import (
@@ -112,45 +113,110 @@ def process_file(
     run_name = csv_path.stem
     run_ts = datetime.now().strftime("%Y%m%dT%H%M%S")
     run_id = f"{run_name}_{run_ts}"
-    logger.info("pipeline starting — run_id: %s, source: %s", run_id, csv_path)
+
+    # Create run output dir early so the per-run log file can be attached before stage 1.
+    run_out_dir = output_runs_dir / run_id
+    run_out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Per-run log: DEBUG-level detail written only to this run's directory.
+    _run_fh = None
+    try:
+        from src.logger import add_run_file_handler
+        _run_fh = add_run_file_handler(run_out_dir / "run.log")
+    except Exception:
+        pass
+
+    try:
+        return _run_pipeline(
+            csv_path=csv_path,
+            base=base,
+            run_name=run_name,
+            run_ts=run_ts,
+            run_id=run_id,
+            run_out_dir=run_out_dir,
+            processed_dir=processed_dir,
+        )
+    finally:
+        if _run_fh is not None:
+            try:
+                from src.logger import remove_run_file_handler
+                remove_run_file_handler(_run_fh)
+            except Exception:
+                pass
+
+
+def _run_pipeline(
+    csv_path: Path,
+    base: Path,
+    run_name: str,
+    run_ts: str,
+    run_id: str,
+    run_out_dir: Path,
+    processed_dir: Path,
+) -> dict:
+    """Execute pipeline stages and I/O for one run; called exclusively by process_file."""
+    logger.info("pipeline starting — run_id: %s, version: %s, source: %s",
+                run_id, MAGPLOTTER_VERSION, csv_path)
     t_start = time.monotonic()
+    stage_timings: dict = {}
 
     # ── Stage 1: Ingestion + Cleaning ─────────────────────────────────────────
     # SchemaValidationError propagates to caller; bad inputs are rejected here.
     logger.info("stage 1 [ingest+clean]: %s", csv_path.name)
+    _t = time.monotonic()
     df, header_comments = parse_raw_csv(str(csv_path))
-    logger.info("stage 1 complete: %d rows", len(df))
+    stage_timings["ingest_clean_s"] = round(time.monotonic() - _t, 4)
+    logger.info("stage 1 complete: %d rows in %.3fs", len(df), stage_timings["ingest_clean_s"])
 
     # ── Stage 2: Transformation ───────────────────────────────────────────────
     logger.info("stage 2 [transform]: run=%s", run_name)
+    _t = time.monotonic()
     df = transform_sensor_data(df)
-    logger.debug("stage 2 complete: columns=%s", sorted(df.columns.tolist()))
+    stage_timings["transform_s"] = round(time.monotonic() - _t, 4)
+    logger.debug("stage 2 complete: columns=%s in %.3fs",
+                 sorted(df.columns.tolist()), stage_timings["transform_s"])
 
     # ── Stage 3: Analysis ─────────────────────────────────────────────────────
     logger.info("stage 3 [analyze]: run=%s", run_name)
+    _t = time.monotonic()
     metrics = compute_all_metrics(df)
-    logger.debug("stage 3 complete: B_mean=%s, samples=%s", metrics.get("B_mean"), metrics.get("num_samples"))
+    stage_timings["analyze_s"] = round(time.monotonic() - _t, 4)
+    logger.debug("stage 3 complete: B_mean=%s, samples=%s in %.3fs",
+                 metrics.get("B_mean"), metrics.get("num_samples"), stage_timings["analyze_s"])
 
     # ── Stage 4: Visualisation ────────────────────────────────────────────────
     logger.info("stage 4 [visualize]: run=%s", run_name)
+    _t = time.monotonic()
     figures = {
         "field_strength_plot.png": render_magnitude(df),
         "heading_plot.png": render_heading(df),
         "axes_plot.png": render_axes(df),
     }
-    logger.debug("stage 4 complete: %d figures rendered", len(figures))
+    stage_timings["visualize_s"] = round(time.monotonic() - _t, 4)
+    logger.debug("stage 4 complete: %d figures in %.3fs",
+                 len(figures), stage_timings["visualize_s"])
 
     # ── Stage 5: I/O ─────────────────────────────────────────────────────────
-    run_out_dir = output_runs_dir / run_id
-    run_out_dir.mkdir(parents=True, exist_ok=True)
+    # Load config once for field mapping and metadata snapshot.
+    _config_snapshot: Optional[dict] = None
+    fm_config: Optional[dict] = None
+    if _FIELD_MAPPING_AVAILABLE:
+        try:
+            fm_config = _load_fm_config(base_dir=base)
+            _config_snapshot = fm_config.get("field_mapping")
+        except Exception:
+            logger.debug("could not load field mapping config for snapshot")
 
     notes_txt = load_run_notes(csv_path)
     summary = {
         "run_name": csv_path.name,
         "run_id": run_id,
         "run_timestamp": run_ts,
+        "magplotter_version": MAGPLOTTER_VERSION,
         "path": str(csv_path),
         "metrics": metrics,
+        "stage_timings": stage_timings,
+        "config_snapshot": {"field_mapping": _config_snapshot},
         "notes_from_file": notes_txt,
         "header_comments": header_comments,
     }
@@ -180,8 +246,11 @@ def process_file(
     # Field mapping (optional subsystem — skipped when spatial columns absent)
     if _FIELD_MAPPING_AVAILABLE:
         logger.info("field mapping: attempting for run: %s", run_name)
+        _t = time.monotonic()
         try:
-            fm_config = _load_fm_config(base_dir=base)
+            # Re-use the config already loaded for the snapshot; avoid a second disk read.
+            if fm_config is None:
+                fm_config = _load_fm_config(base_dir=base)
             # Read the spatial CSV here (all columns preserved) so run_field_mapping
             # receives a DataFrame — file I/O stays in the orchestrator.
             fm_df = _read_fm_csv(str(csv_path))
@@ -203,8 +272,13 @@ def process_file(
                 logger.debug("field mapping: could not read spatial CSV — skipped for run: %s", run_name)
         except Exception:
             logger.warning("field mapping failed for run: %s", run_name, exc_info=True)
+        stage_timings["field_mapping_s"] = round(time.monotonic() - _t, 4)
 
-    # JSON summary
+    duration = time.monotonic() - t_start
+    stage_timings["total_s"] = round(duration, 4)
+    summary["processing_duration_s"] = round(duration, 4)
+
+    # JSON summary (written once with all fields including final duration)
     summary_path = run_out_dir / "summary.json"
     with open(summary_path, "w", encoding="utf-8") as fh:
         json.dump(summary, fh, indent=2, ensure_ascii=False)
@@ -215,12 +289,37 @@ def process_file(
     except Exception:
         logger.warning("report generation failed for run: %s", run_name)
 
-    # Processing log
+    # Processing log — structured human-readable run summary.
     try:
+        _m = summary.get("metrics", {})
+        _fr = _m.get("field_rate", {}) or {}
         with open(run_out_dir / "processing_log.txt", "w", encoding="utf-8") as logf:
-            logf.write("Processed by sensor_lab.processor\n")
-            logf.write(f"source: {csv_path}\n")
-            logf.write(f"summary: {summary_path}\n")
+            logf.write("MagPlotter Run Log\n")
+            logf.write("==================\n\n")
+            logf.write(f"Run ID      : {run_id}\n")
+            logf.write(f"Version     : {MAGPLOTTER_VERSION}\n")
+            logf.write(f"Timestamp   : {run_ts}\n")
+            logf.write(f"Source      : {csv_path}\n")
+            logf.write(f"Duration    : {duration:.3f} s\n")
+            logf.write("\nStage Timings\n")
+            logf.write("-------------\n")
+            for stage, secs in stage_timings.items():
+                if stage != "total_s":
+                    logf.write(f"  {stage:<22}: {secs:.4f} s\n")
+            logf.write("\nSummary Statistics\n")
+            logf.write("------------------\n")
+            logf.write(f"  Samples      : {_m.get('num_samples', 'N/A')}\n")
+            logf.write(f"  Time span    : {_m.get('time_span_s', 'N/A')} s\n")
+            logf.write(f"  B_mean       : {_m.get('B_mean', 'N/A')}\n")
+            logf.write(f"  B_std        : {_m.get('B_std', 'N/A')}\n")
+            logf.write(f"  B_drift      : {_m.get('B_drift', 'N/A')}\n")
+            logf.write(f"  Heading mean : {_m.get('heading_mean_deg', 'N/A')} deg\n")
+            logf.write(f"  dB/dt max    : {_fr.get('dB_dt_max_abs', 'N/A')} µT/s\n")
+            logf.write(f"  Noise metric : {_m.get('noise_metric', 'N/A')}\n")
+            logf.write("\nOutput Files\n")
+            logf.write("------------\n")
+            for fname in sorted(p.name for p in run_out_dir.iterdir() if p.is_file()):
+                logf.write(f"  {fname}\n")
     except Exception:
         logger.warning("could not write processing_log.txt for run: %s", run_name)
 
@@ -231,9 +330,8 @@ def process_file(
     except Exception:
         logger.warning("could not move %s to processed/", csv_path.name)
 
-    duration = time.monotonic() - t_start
     logger.info(
-        "pipeline complete — run_id: %s, duration: %.2fs, output: %s",
-        run_id, duration, run_out_dir,
+        "pipeline complete — run_id: %s, version: %s, duration: %.2fs, output: %s",
+        run_id, MAGPLOTTER_VERSION, duration, run_out_dir,
     )
     return summary
